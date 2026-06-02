@@ -39,8 +39,7 @@ When an override names a vendor rule that no longer exists in the vendor file.
 
 ### D-5 — Vendor file granularity and update cadence
 One `vendor_rules.yara` vs. multiple vendor files; how often updates arrive and who commits them.
-- **Proposed default:** single `vendor/vendor_rules.yara`; updates committed via MR so the diff and the stale-override check run before merge.
-- **Status:** _open; default usable now._
+- **Status:** **RESOLVED — see Section 3.**
 
 ### D-6 — Sample sourcing for tests
 Synthetic fixtures only (in-repo) vs. also hash-referenced samples from a secured store.
@@ -92,3 +91,4 @@ Whether the build emits one filtered ruleset or several (e.g. an endpoint profil
 |---|---|---|---|
 | D-1 | **Consumer: Corelight Fleet Manager** — modules: `pe`, `elf`, `math`; YARA engine version pinned to what Corelight embeds | 2026-06-02 | Corelight Fleet Manager is the deployment target; it scans files extracted from network traffic via Zeek. Supports a well-defined YARA module set; does not support all modules (e.g. `dotnet` support should be verified before use). |
 | D-2 | **Output: source (`.yara`) only** | 2026-06-02 | Corelight Fleet Manager ingests source rules and handles its own compilation internally; `.yarc` is neither needed nor useful. CI compile step still runs as the validation gate but `.yarc` is not emitted as an artifact. |
+| D-5 | **Multiple vendor files allowed; each update via MR** | 2026-06-02 | The `vendor/` directory may contain more than one `.yara` file (e.g. one per vendor feed). Every update — adding, replacing, or removing a vendor file — is committed through a merge request so the diff and stale-override check run before the change reaches the corpus. |
