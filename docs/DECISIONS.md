@@ -18,14 +18,12 @@ This document tracks decisions that shape the implementation. Open items have a 
 ### D-1 — What consumes the final ruleset? **(highest impact)**
 The deployment/scan target (SIEM, EDR, ClamAV, a custom yara-python scanner, etc.) determines which YARA modules must be supported and which output format is usable. ClamAV, for example, supports only a subset of YARA features; an EDR may pin a specific engine version.
 - **Why it matters:** drives `yara_modules` in `config/build.yaml`, the CI image contents, and the source-vs-compiled output choice.
-- **Proposed default:** assume a standard `yara`/`yara-python` consumer with `pe` and `math` modules available, version not pinned → emit source + compiled.
-- **Status:** _open — needs answer from you._
+- **Status:** **RESOLVED — see Section 3.**
 
 ### D-2 — Output format
 Source `.yara`, compiled `.yarc`, or both.
 - **Trade-off:** compiled loads faster but is engine-version-bound and non-portable; source is portable but compiled at the destination.
-- **Proposed default:** **both** — ship source always, ship compiled for the pinned-version consumer if D-1 confirms one.
-- **Status:** _open; default usable now._
+- **Status:** **RESOLVED — see Section 3.** (Corelight Fleet Manager manages its own compilation; ship source only.)
 
 ### D-3 — PCAP delivery + scanning approach
 How a capture reaches the manual job, and whether to scan raw or carve files first.
@@ -90,8 +88,7 @@ Whether the build emits one filtered ruleset or several (e.g. an endpoint profil
 
 ## 3. Resolved decisions (decision log)
 
-_(none yet — move items here as `D-n: chosen option — date — rationale` once confirmed.)_
-
 | ID | Decision | Date | Rationale |
 |---|---|---|---|
-| _e.g._ D-2 | _both formats_ | _—_ | _consumer version not yet pinned_ |
+| D-1 | **Consumer: Corelight Fleet Manager** — modules: `pe`, `elf`, `math`; YARA engine version pinned to what Corelight embeds | 2026-06-02 | Corelight Fleet Manager is the deployment target; it scans files extracted from network traffic via Zeek. Supports a well-defined YARA module set; does not support all modules (e.g. `dotnet` support should be verified before use). |
+| D-2 | **Output: source (`.yara`) only** | 2026-06-02 | Corelight Fleet Manager ingests source rules and handles its own compilation internally; `.yarc` is neither needed nor useful. CI compile step still runs as the validation gate but `.yarc` is not emitted as an artifact. |
