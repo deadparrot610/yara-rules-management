@@ -48,8 +48,7 @@ Synthetic fixtures only (in-repo) vs. also hash-referenced samples from a secure
 
 ### D-7 — Versioning scheme
 How releases are numbered.
-- **Proposed default:** semantic version tags (e.g. `v1.4.0`); the build manifest records exact input hashes regardless.
-- **Status:** _open; default usable now._
+- **Status:** **RESOLVED — see Section 3.**
 
 ### D-8 — Filter conflict tie-break (same specificity)
 When two filters at the same scope specificity match a rule with opposing actions (one include, one exclude).
@@ -92,3 +91,4 @@ Whether the build emits one filtered ruleset or several (e.g. an endpoint profil
 | D-1 | **Consumer: Corelight Fleet Manager** — modules: `pe`, `elf`, `math`; YARA engine version pinned to what Corelight embeds | 2026-06-02 | Corelight Fleet Manager is the deployment target; it scans files extracted from network traffic via Zeek. Supports a well-defined YARA module set; does not support all modules (e.g. `dotnet` support should be verified before use). |
 | D-2 | **Output: source (`.yara`) only** | 2026-06-02 | Corelight Fleet Manager ingests source rules and handles its own compilation internally; `.yarc` is neither needed nor useful. CI compile step still runs as the validation gate but `.yarc` is not emitted as an artifact. |
 | D-5 | **Multiple vendor files allowed; each update via MR** | 2026-06-02 | The `vendor/` directory may contain more than one `.yara` file (e.g. one per vendor feed). Every update — adding, replacing, or removing a vendor file — is committed through a merge request so the diff and stale-override check run before the change reaches the corpus. |
+| D-7 | **Semantic version tags (e.g. `v1.4.0`)** | 2026-06-02 | Releases are tagged with semantic version strings; the build manifest records exact input hashes regardless of the version tag. |
