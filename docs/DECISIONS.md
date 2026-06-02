@@ -52,9 +52,7 @@ How releases are numbered.
 
 ### D-8 — Filter conflict tie-break (same specificity)
 When two filters at the same scope specificity match a rule with opposing actions (one include, one exclude).
-- **Options:** `exclude_wins` (most conservative — drop the rule); `last_match_wins` (ordered, like firewall/.gitignore rules); `error` (fail and force a human to resolve).
-- **Proposed default:** **`exclude_wins`** — fail-safe toward a smaller, more deliberate deployment. `error` is the stricter, most auditable alternative if the team prefers no implicit resolution.
-- **Status:** _open; affects `apply_filters.py` (Phase 3)._
+- **Status:** **RESOLVED — see Section 3.**
 
 ### D-9 — Filter default mode
 The baseline before any filter matches.
@@ -92,3 +90,4 @@ Whether the build emits one filtered ruleset or several (e.g. an endpoint profil
 | D-2 | **Output: source (`.yara`) only** | 2026-06-02 | Corelight Fleet Manager ingests source rules and handles its own compilation internally; `.yarc` is neither needed nor useful. CI compile step still runs as the validation gate but `.yarc` is not emitted as an artifact. |
 | D-5 | **Multiple vendor files allowed; each update via MR** | 2026-06-02 | The `vendor/` directory may contain more than one `.yara` file (e.g. one per vendor feed). Every update — adding, replacing, or removing a vendor file — is committed through a merge request so the diff and stale-override check run before the change reaches the corpus. |
 | D-7 | **Semantic version tags (e.g. `v1.4.0`)** | 2026-06-02 | Releases are tagged with semantic version strings; the build manifest records exact input hashes regardless of the version tag. |
+| D-8 | **Filter tie-break: `exclude_wins`** | 2026-06-02 | When two same-specificity filters conflict, the exclude action wins. Fail-safe toward a smaller, more deliberate deployment. |
