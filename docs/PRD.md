@@ -3,10 +3,8 @@
 | | |
 |---|---|
 | **Status** | Draft v0.2 |
-| **Owner** | _(detection engineering lead — fill in)_ |
 | **Last updated** | 2026-06-02 |
-| **Reviewers** | _(security eng, platform/CI owner)_ |
-| **Repository** | GitLab (group/project TBD) |
+| **Repository** | GitLab fclabs-group/yara-rules |
 
 **Changelog**
 - v0.2 — Added filter policy (rule selection layer): FR-17…FR-24, related open questions, decisions D-8…D-11.
