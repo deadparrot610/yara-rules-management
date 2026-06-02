@@ -1,0 +1,97 @@
+# Decisions & Assumptions Register — YARA Rule Pipeline
+
+| | |
+|---|---|
+| **Status** | Draft v0.2 |
+| **Last updated** | 2026-06-02 |
+
+This document tracks decisions that shape the implementation. Open items have a **proposed default** so building can proceed; confirm or change them before or during the relevant phase. Resolved items move to Section 3 as a lightweight decision record.
+
+**Changelog**
+- v0.2 — Added D-8…D-11 for the filter policy.
+- v0.1 — Initial draft (D-1…D-7).
+
+---
+
+## 1. Open decisions
+
+### D-1 — What consumes the final ruleset? **(highest impact)**
+The deployment/scan target (SIEM, EDR, ClamAV, a custom yara-python scanner, etc.) determines which YARA modules must be supported and which output format is usable. ClamAV, for example, supports only a subset of YARA features; an EDR may pin a specific engine version.
+- **Why it matters:** drives `yara_modules` in `config/build.yaml`, the CI image contents, and the source-vs-compiled output choice.
+- **Proposed default:** assume a standard `yara`/`yara-python` consumer with `pe` and `math` modules available, version not pinned → emit source + compiled.
+- **Status:** _open — needs answer from you._
+
+### D-2 — Output format
+Source `.yara`, compiled `.yarc`, or both.
+- **Trade-off:** compiled loads faster but is engine-version-bound and non-portable; source is portable but compiled at the destination.
+- **Proposed default:** **both** — ship source always, ship compiled for the pinned-version consumer if D-1 confirms one.
+- **Status:** _open; default usable now._
+
+### D-3 — PCAP delivery + scanning approach
+How a capture reaches the manual job, and whether to scan raw or carve files first.
+- **Options:** CI/CD file variable (small captures) vs. object-storage key (large captures); raw-PCAP scan vs. carve-then-scan (Zeek/`tcpflow`/Suricata).
+- **Proposed default:** CI file variable for v1 with raw + carved scan of small test captures; revisit object storage if captures exceed variable limits.
+- **Status:** _open; lowest priority (manual job, build last)._
+
+### D-4 — Stale-override policy
+When an override names a vendor rule that no longer exists in the vendor file.
+- **Options:** hard fail the pipeline vs. emit a blocking warning for review.
+- **Proposed default:** **hard fail** — a stale override means a suppressed detection may have silently returned; surface it loudly.
+- **Status:** _open; default recommended._
+
+### D-5 — Vendor file granularity and update cadence
+One `vendor_rules.yara` vs. multiple vendor files; how often updates arrive and who commits them.
+- **Proposed default:** single `vendor/vendor_rules.yara`; updates committed via MR so the diff and the stale-override check run before merge.
+- **Status:** _open; default usable now._
+
+### D-6 — Sample sourcing for tests
+Synthetic fixtures only (in-repo) vs. also hash-referenced samples from a secured store.
+- **Proposed default:** synthetic/inert fixtures in-repo for v1 CI; add a hash-referenced secured store later if broader validation is needed.
+- **Status:** _open; default usable now (NFR-3 satisfied either way)._
+
+### D-7 — Versioning scheme
+How releases are numbered.
+- **Proposed default:** semantic version tags (e.g. `v1.4.0`); the build manifest records exact input hashes regardless.
+- **Status:** _open; default usable now._
+
+### D-8 — Filter conflict tie-break (same specificity)
+When two filters at the same scope specificity match a rule with opposing actions (one include, one exclude).
+- **Options:** `exclude_wins` (most conservative — drop the rule); `last_match_wins` (ordered, like firewall/.gitignore rules); `error` (fail and force a human to resolve).
+- **Proposed default:** **`exclude_wins`** — fail-safe toward a smaller, more deliberate deployment. `error` is the stricter, most auditable alternative if the team prefers no implicit resolution.
+- **Status:** _open; affects `apply_filters.py` (Phase 3)._
+
+### D-9 — Filter default mode
+The baseline before any filter matches.
+- **Options:** `include_all` (denylist — everything ships unless excluded) vs. `include_none` (allowlist — nothing ships unless included).
+- **Proposed default:** **`include_all`** — vendor corpora are large; allowlisting from scratch is high-effort and risks shipping almost nothing. Switch to `include_none` for a tightly curated profile once the included set is well understood.
+- **Status:** _open; default recommended for v1._
+
+### D-10 — Filter-induced coverage-gap policy
+When a filter excludes an override rule whose superseded vendor rules were already removed (neither vendor detection nor replacement remains).
+- **Options:** hard fail vs. blocking warning.
+- **Proposed default:** **hard fail** — mirrors the stale-override stance (D-4); a silent coverage gap is exactly what the pipeline exists to prevent.
+- **Status:** _open; default recommended._
+
+### D-11 — Single policy vs. multiple output profiles
+Whether the build emits one filtered ruleset or several (e.g. an endpoint profile and a network profile from the same corpus).
+- **Proposed default:** **single active filter policy → single output** for v1 (matches the original single-file requirement). Multiple profiles are a natural later extension: the same engine run per-profile policy to emit several artifacts. Designing the filter engine to take a policy as input keeps that door open.
+- **Status:** _open; v1 stays single._
+
+## 2. Standing assumptions (carried into the design)
+
+- Vendor rules arrive as valid YARA text files.
+- The pipeline produces artifacts only; deployment to the live platform is a separate, out-of-scope process.
+- `plyara` handles parsing/manipulation; `yara-python`/`yara` is the compilation and scan authority.
+- GitLab CI/CD with Docker executors and the Package Registry are available.
+- No live malware enters the repository (NFR-3).
+- Single output file ⇒ single namespace ⇒ override means removal (the design's load-bearing assumption; revisiting it implies a multi-namespace deployment model and a different build).
+- Filters select rules only; they never rewrite rule contents. A filtered-out rule stays in source.
+- Filtering runs after the override strip; a filter cannot resurrect a rule an override removed.
+
+## 3. Resolved decisions (decision log)
+
+_(none yet — move items here as `D-n: chosen option — date — rationale` once confirmed.)_
+
+| ID | Decision | Date | Rationale |
+|---|---|---|---|
+| _e.g._ D-2 | _both formats_ | _—_ | _consumer version not yet pinned_ |
