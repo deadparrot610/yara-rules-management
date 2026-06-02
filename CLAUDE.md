@@ -55,7 +55,7 @@ A referenced rule must precede the rule that references it. Default emission ord
 
 | ID | Topic | Default |
 |---|---|---|
-| D-1 | Rule consumer / YARA engine target | `pe` + `math` modules; emit source + compiled |
+| D-1 | Rule consumer / YARA engine target | **RESOLVED:** Corelight Fleet Manager — modules `pe`, `elf`, `math` (verify `dotnet` before use) |
 | D-4 | Stale-override policy | hard fail |
 | D-8 | Same-specificity filter tie-break | `exclude_wins` |
 | D-9 | Filter default mode | `include_all` |
@@ -68,7 +68,7 @@ Implement D-8 and D-9 as reads from `config/build.yaml` and `filters/filter_poli
 
 - **No live malware.** Tests use synthetic/inert fixtures in `tests/samples/` or hash-referenced samples fetched from a secured store. Never commit malicious payloads.
 - **Rule output order must be deterministic** (NFR-6) — identical inputs must produce identical output on every run.
-- **Compiled `.yarc` is engine-version-bound** (NFR-5). Emit source always; `.yarc` only for pinned-version consumers.
+- **Output is source (`.yara`) only** (D-2 resolved). Corelight Fleet Manager handles its own compilation internally; `.yarc` is not emitted as an artifact. The CI compile step still runs as the validation gate.
 - The filter engine should accept a policy as an argument (not read a global) to keep the door open for multiple output profiles later (D-11) without a rewrite.
 - All tests must validate the *built* `dist/` artifacts, not re-build inline — this is what CI does (build artifacts are passed to the test stage).
 
