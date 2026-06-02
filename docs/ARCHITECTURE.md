@@ -41,7 +41,7 @@ yara-rules/
 ├── config/
 │   └── build.yaml              # output formats, YARA modules, external vars, policy flags
 ├── vendor/
-│   └── vendor_rules.yara       # committed as received; updates are commits
+│   └── *.yara                  # one or more vendor files; committed as received; updates via MR
 ├── custom/                     # net-new in-house rules, grouped by category
 │   ├── malware/
 │   ├── apt/

@@ -23,7 +23,7 @@ Build outputs land in `dist/` (gitignored): `merged_rules.yara`, `merged_rules.y
 ## Architecture
 
 ### Three rule classes
-- **Vendor** — `vendor/vendor_rules.yara`, committed as received; updates are commits/MRs.
+- **Vendor** — `vendor/*.yara`, one or more files committed as received; every update (add, replace, or remove) is an MR so the diff and stale-override check run before merge.
 - **Custom** — `custom/` subdirectories (malware/, apt/, tooling/), in-house authored.
 - **Overrides** — `overrides/overrides.yara`, in-house rules that *replace* specific vendor rules.
 
@@ -56,6 +56,7 @@ A referenced rule must precede the rule that references it. Default emission ord
 | ID | Topic | Default |
 |---|---|---|
 | D-1 | Rule consumer / YARA engine target | **RESOLVED:** Corelight Fleet Manager — modules `pe`, `elf`, `math` (verify `dotnet` before use) |
+| D-5 | Vendor file granularity | **RESOLVED:** multiple `.yara` files in `vendor/`; each update via MR |
 | D-4 | Stale-override policy | hard fail |
 | D-8 | Same-specificity filter tie-break | `exclude_wins` |
 | D-9 | Filter default mode | `include_all` |
