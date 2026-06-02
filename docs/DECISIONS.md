@@ -56,9 +56,7 @@ When two filters at the same scope specificity match a rule with opposing action
 
 ### D-9 — Filter default mode
 The baseline before any filter matches.
-- **Options:** `include_all` (denylist — everything ships unless excluded) vs. `include_none` (allowlist — nothing ships unless included).
-- **Proposed default:** **`include_all`** — vendor corpora are large; allowlisting from scratch is high-effort and risks shipping almost nothing. Switch to `include_none` for a tightly curated profile once the included set is well understood.
-- **Status:** _open; default recommended for v1._
+- **Status:** **RESOLVED — see Section 3.**
 
 ### D-10 — Filter-induced coverage-gap policy
 When a filter excludes an override rule whose superseded vendor rules were already removed (neither vendor detection nor replacement remains).
@@ -91,3 +89,4 @@ Whether the build emits one filtered ruleset or several (e.g. an endpoint profil
 | D-5 | **Multiple vendor files allowed; each update via MR** | 2026-06-02 | The `vendor/` directory may contain more than one `.yara` file (e.g. one per vendor feed). Every update — adding, replacing, or removing a vendor file — is committed through a merge request so the diff and stale-override check run before the change reaches the corpus. |
 | D-7 | **Semantic version tags (e.g. `v1.4.0`)** | 2026-06-02 | Releases are tagged with semantic version strings; the build manifest records exact input hashes regardless of the version tag. |
 | D-8 | **Filter tie-break: `exclude_wins`** | 2026-06-02 | When two same-specificity filters conflict, the exclude action wins. Fail-safe toward a smaller, more deliberate deployment. |
+| D-9 | **Filter default mode: `include_all` (denylist)** | 2026-06-02 | Everything ships unless explicitly excluded. Vendor corpora are large; allowlisting from scratch risks shipping almost nothing. |

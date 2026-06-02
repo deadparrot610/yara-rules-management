@@ -59,7 +59,7 @@ A referenced rule must precede the rule that references it. Default emission ord
 | D-5 | Vendor file granularity | **RESOLVED:** multiple `.yara` files in `vendor/`; each update via MR |
 | D-4 | Stale-override policy | hard fail |
 | D-8 | Same-specificity filter tie-break | **RESOLVED:** `exclude_wins` |
-| D-9 | Filter default mode | `include_all` |
+| D-9 | Filter default mode | **RESOLVED:** `include_all` (denylist) |
 | D-10 | Coverage-gap policy | hard fail |
 | D-11 | Single vs. multiple output profiles | single policy / single output in v1 |
 
