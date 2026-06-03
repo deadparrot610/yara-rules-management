@@ -61,7 +61,7 @@ A referenced rule must precede the rule that references it. Default emission ord
 | D-8 | Same-specificity filter tie-break | **RESOLVED:** `exclude_wins` |
 | D-9 | Filter default mode | **RESOLVED:** `include_all` (denylist) |
 | D-10 | Coverage-gap policy | **RESOLVED:** manual checkpoint; reviewer keep/discard decision recorded in `filters/coverage_gap_decisions.yaml` |
-| D-11 | Single vs. multiple output profiles | single policy / single output in v1 |
+| D-11 | Single vs. multiple output profiles | **RESOLVED:** single output file; filter engine takes policy as an argument to allow future profiles |
 
 Implement D-8 and D-9 as reads from `config/build.yaml` and `filters/filter_policy.yaml` respectively — not hardcoded — so they can be changed without a code edit.
 
