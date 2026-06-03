@@ -11,7 +11,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 pip install -r requirements.txt          # plyara, yara-python, pytest, pyyaml
 
-python build/build_ruleset.py            # build dist/ artifacts
+python scripts/build_ruleset.py          # build dist/ artifacts
 python scripts/lint.py                   # lint all rule files + filter policy
 python scripts/check_overrides.py        # validate override manifest standalone
 python scripts/apply_filters.py --preview  # preview filter effect without building
@@ -23,12 +23,12 @@ Build outputs land in `dist/` (gitignored): `merged_rules.yara`, `build_manifest
 ## Architecture
 
 ### Three rule classes
-- **Vendor** — `vendor/*.yara`, one or more files committed as received; every update (add, replace, or remove) is an MR so the diff and stale-override check run before merge.
-- **Custom** — `custom/` subdirectories (malware/, apt/, tooling/), in-house authored.
-- **Overrides** — `overrides/overrides.yara`, in-house rules that *replace* specific vendor rules.
+- **Vendor** — `rules/vendor/*.yara`, one or more files committed as received; every update (add, replace, or remove) is an MR so the diff and stale-override check run before merge.
+- **Custom** — `rules/custom/` subdirectories (malware/, apt/, tooling/), in-house authored.
+- **Overrides** — `rules/overrides/overrides.yara`, in-house rules that *replace* specific vendor rules.
 
 ### Override = removal, not coexistence
-YARA rejects duplicate identifiers in a single compilation unit. Overriding a vendor rule means **removing that vendor rule from the corpus** before compilation. Which vendor identifiers each override supersedes is declared in `overrides/override_manifest.yaml`. A stale override (override names a vendor rule that no longer exists) blocks the pipeline and requires a reviewer to record a keep/discard decision in `overrides/stale_override_decisions.yaml`; subsequent runs apply recorded decisions automatically. An unresolved stale override with no recorded decision is always a hard block.
+YARA rejects duplicate identifiers in a single compilation unit. Overriding a vendor rule means **removing that vendor rule from the corpus** before compilation. Which vendor identifiers each override supersedes is declared in `rules/overrides/override_manifest.yaml`. A stale override (override names a vendor rule that no longer exists) blocks the pipeline and requires a reviewer to record a keep/discard decision in `rules/overrides/stale_override_decisions.yaml`; subsequent runs apply recorded decisions automatically. An unresolved stale override with no recorded decision is always a hard block.
 
 ### Filter policy
 `filters/filter_policy.yaml` is a **selection layer** on the post-merge corpus. It never edits or deletes source rules — a filtered-out rule stays in the repo. Filters run **after** the override strip; a filter cannot resurrect a superseded rule.
@@ -40,7 +40,7 @@ YARA rejects duplicate identifiers in a single compilation unit. Overriding a ve
 2. **Referential integrity** — an excluded rule still referenced in an included rule's condition is an error.
 3. **Empty/below-floor guard** — output below `min_output_rules` triggers `on_empty_output` policy.
 
-### Build sequence (`build/build_ruleset.py`)
+### Build sequence (`scripts/build_ruleset.py`)
 Parse → load manifest + policy + config → validate overrides → strip superseded vendor rules → apply filter policy → run cross-checks → collision check → topological order → emit source → compile (authoritative validation gate) → write manifest.
 
 **The compile step is the validation authority.** Never emit an artifact that hasn't compiled. The compile is non-negotiable even when only source output is requested.
@@ -56,8 +56,8 @@ A referenced rule must precede the rule that references it. Default emission ord
 | ID | Topic | Default |
 |---|---|---|
 | D-1 | Rule consumer / YARA engine target | **RESOLVED:** Corelight Fleet Manager — modules `pe`, `elf`, `math` (verify `dotnet` before use) |
-| D-5 | Vendor file granularity | **RESOLVED:** multiple `.yara` files in `vendor/`; each update via MR |
-| D-4 | Stale-override policy | **RESOLVED:** manual checkpoint; reviewer keep/discard decision recorded in `overrides/stale_override_decisions.yaml` |
+| D-5 | Vendor file granularity | **RESOLVED:** multiple `.yara` files in `rules/vendor/`; each update via MR |
+| D-4 | Stale-override policy | **RESOLVED:** manual checkpoint; reviewer keep/discard decision recorded in `rules/overrides/stale_override_decisions.yaml` |
 | D-8 | Same-specificity filter tie-break | **RESOLVED:** `exclude_wins` |
 | D-9 | Filter default mode | **RESOLVED:** `include_all` (denylist) |
 | D-10 | Coverage-gap policy | **RESOLVED:** manual checkpoint; reviewer keep/discard decision recorded in `filters/coverage_gap_decisions.yaml` |

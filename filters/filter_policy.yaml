@@ -1,0 +1,5 @@
+version: 1
+default_mode: include_all
+on_empty_output: fail
+min_output_rules: 1
+filters: []
