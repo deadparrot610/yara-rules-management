@@ -36,7 +36,7 @@ YARA rejects duplicate identifiers in a single compilation unit. Overriding a ve
 **Resolution:** `rule:<Identifier>` scope > ruleset scope (`vendor`/`custom`/`overrides`) > `global`. Same-specificity tie-break is `exclude_wins` by default (D-8). Default mode is `include_all` (D-9).
 
 **Cross-checks that must run after the include set is computed:**
-1. **Coverage-gap guard** — excluding an override rule whose superseded vendor rules were already removed leaves neither detection. Hard fail by default (D-10).
+1. **Coverage-gap guard** — excluding an override rule whose superseded vendor rules were already removed leaves neither detection. Blocks and requires a reviewer keep/discard decision recorded in `filters/coverage_gap_decisions.yaml`; unresolved gaps are always a hard block.
 2. **Referential integrity** — an excluded rule still referenced in an included rule's condition is an error.
 3. **Empty/below-floor guard** — output below `min_output_rules` triggers `on_empty_output` policy.
 
@@ -60,7 +60,7 @@ A referenced rule must precede the rule that references it. Default emission ord
 | D-4 | Stale-override policy | **RESOLVED:** manual checkpoint; reviewer keep/discard decision recorded in `overrides/stale_override_decisions.yaml` |
 | D-8 | Same-specificity filter tie-break | **RESOLVED:** `exclude_wins` |
 | D-9 | Filter default mode | **RESOLVED:** `include_all` (denylist) |
-| D-10 | Coverage-gap policy | hard fail |
+| D-10 | Coverage-gap policy | **RESOLVED:** manual checkpoint; reviewer keep/discard decision recorded in `filters/coverage_gap_decisions.yaml` |
 | D-11 | Single vs. multiple output profiles | single policy / single output in v1 |
 
 Implement D-8 and D-9 as reads from `config/build.yaml` and `filters/filter_policy.yaml` respectively — not hardcoded — so they can be changed without a code edit.

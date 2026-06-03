@@ -9,6 +9,7 @@
 This document describes how the system in the PRD is built. It assumes the reader has read the PRD's Section 2 (the duplicate-identifier constraint), which is the foundation for everything here.
 
 **Changelog**
+- v0.4 — Resolved D-10: coverage-gap policy is now a manual checkpoint with a persistent decisions file (`filters/coverage_gap_decisions.yaml`); updated §2, §4.3, added §4.5, updated §5 and §7.
 - v0.3 — Resolved D-4: stale-override policy is now a manual checkpoint with a persistent decisions file (`overrides/stale_override_decisions.yaml`); updated §2, §3.2, added §3.3, updated §5 and §7.
 - v0.2 — Added §4 Filter policy model; updated §2 (filters/ tree), §5 build sequence (filter stage + cross-checks), §7 components (apply_filters.py), §10 CI, and the build manifest contents.
 - v0.1 — Initial draft.
@@ -52,7 +53,8 @@ yara-rules/
 │   ├── override_manifest.yaml          # which vendor rules each override supersedes + why
 │   └── stale_override_decisions.yaml   # reviewer keep/discard decisions for stale overrides
 ├── filters/
-│   └── filter_policy.yaml      # declarative include/exclude selection layer
+│   ├── filter_policy.yaml              # declarative include/exclude selection layer
+│   └── coverage_gap_decisions.yaml     # reviewer keep/discard decisions for coverage gaps
 ├── build/
 │   └── build_ruleset.py        # parse → strip → merge → filter → order → compile → manifest
 ├── scripts/
@@ -173,13 +175,43 @@ For each YARA rule `R` in the post-merge corpus:
 4. **Tie-break** at the same specificity, if both `include` and `exclude` match: apply the configured policy — **exclude-wins** (default), `last_match_wins`, or `error` (fail and require human resolution). [D-8]
 
 ### 4.3 Cross-checks (run after the include set is computed)
-- **Coverage-gap guard (FR-22).** If `R` is an override rule, `R` is excluded by the policy, and `R` superseded vendor rules that the merge removed, the corpus now has neither the vendor detection nor its replacement. This is reported and, per policy (default fail, D-10), blocks the build. Mirrors the stale-override guard.
+- **Coverage-gap guard (FR-22).** If `R` is an override rule, `R` is excluded by the policy, and `R` superseded vendor rules that the merge removed, the corpus now has neither the vendor detection nor its replacement. The pipeline blocks and requires a reviewer decision per the checkpoint mechanism in §4.5.
 - **Referential integrity (FR-23).** For every included rule, all rule identifiers referenced in its condition (including private rules) must also be included. An excluded-but-referenced rule is an error, reported by name and referrer. (The compile step in §5 is the backstop, but this check produces a clear, source-attributed message.)
 - **Empty/below-floor guard (FR-23).** If the final included count is `0` or below `min_output_rules`, act per `on_empty_output`. Protects against an over-narrow allowlist shipping almost nothing.
 
 ### 4.4 Interaction notes
 - Filtering runs **after** the override strip, so an `include` filter naming an already-superseded vendor identifier matches nothing; lint warns that the named rule is absent (it cannot be resurrected by a filter — that identifier no longer exists in the corpus).
 - Excluding a vendor rule that an override already removed is a harmless no-op (already gone); it is recorded but not an error.
+
+### 4.5 Coverage-gap checkpoint and decisions file
+
+A coverage gap — an override rule excluded by a filter while its superseded vendor rules are already gone — is a silent loss of detection that the pipeline must surface explicitly. Rather than hard-failing, the pipeline **blocks and requires a reviewer decision** for each gap. The mechanism mirrors §3.3.
+
+**Checkpoint flow:**
+1. `apply_filters.py` detects one or more coverage gaps and prints a clear prompt per gap, listing the override rule, the responsible filter (by id), and the two options.
+2. The reviewer decides for each gap:
+   - **keep** — consciously accept that neither the vendor detection nor its override will run (e.g. the threat is no longer relevant); the gap is acknowledged and the filter stands.
+   - **discard** — the filter should not exclude this override rule; the reviewer revises the filter policy and re-runs.
+3. The reviewer records the decision in `filters/coverage_gap_decisions.yaml` and commits it. On the next pipeline run the checkpoint reads this file, applies recorded decisions automatically, and only blocks for gaps that still have no recorded decision.
+
+**Decisions file format:**
+
+```yaml
+coverage_gap_decisions:
+  - override_rule: Custom_Override_Emotet
+    filter_id: F-001
+    decision: keep                  # keep | discard
+    reason: "Emotet campaign ended; neither detection needed in current profile"
+    reviewer: a.analyst
+    date: 2026-06-02
+    ticket: SEC-2005
+```
+
+**Invariants:**
+- A coverage gap with no recorded decision is always a hard block — there is no silent pass-through.
+- A `discard` decision signals that the filter policy should be revised; `apply_filters.py` reports this as a required action rather than auto-modifying the policy.
+- The decisions file is committed to the repo and version-controlled, providing a full audit trail of every coverage-gap resolution.
+- If the filter policy changes and a previously recorded gap no longer exists (the override rule is now included), the corresponding decision record is inert but harmless; lint may warn that it is no longer referenced.
 
 ## 5. Build logic (`build/build_ruleset.py`)
 
@@ -189,7 +221,7 @@ Sequence:
 3. **Validate overrides** via the manifest rules in §3.2–§3.3 (delegates to `check_overrides.py`). Block on any stale entry with no recorded decision in `stale_override_decisions.yaml`; apply recorded decisions automatically.
 4. **Strip** every superseded identifier from the parsed vendor set (override merge).
 5. **Apply the filter policy** via `apply_filters.py` (§4.2), producing the included set and the exclusion record.
-6. **Run filter cross-checks** (§4.3): coverage-gap, referential integrity, empty/floor guards.
+6. **Run filter cross-checks** (§4.3): coverage-gap (reads `coverage_gap_decisions.yaml`, blocks on unresolved gaps), referential integrity, empty/floor guards.
 7. **Detect residual collisions** — any identifier appearing in more than one source after stripping/filtering is an error (e.g. a custom rule accidentally reusing a vendor name without an override declaration).
 8. **Order** the emitted rules so dependencies resolve (see §6): vendor-remainder → overrides → custom, with topological adjustment if intra-set references exist.
 9. **Emit** `dist/merged_rules.yara` (source) and/or compile to `dist/merged_rules.yarc` per configured formats.
@@ -223,7 +255,7 @@ required_meta: [author, date, description, reference, severity]
 
 **`scripts/check_overrides.py`** implements the manifest validation in §3.2–§3.3: detects stale and ambiguous override entries, reads `stale_override_decisions.yaml` to apply recorded reviewer decisions, and blocks on any unresolved stale entry. Runnable standalone (useful immediately after a vendor file update, before merging).
 
-**`scripts/apply_filters.py`** implements the resolution algorithm and cross-checks in §4.2–§4.3. Runnable standalone against a parsed corpus to preview what a policy change would include/exclude before committing.
+**`scripts/apply_filters.py`** implements the resolution algorithm and cross-checks in §4.2–§4.5: filter resolution, coverage-gap detection (reads `coverage_gap_decisions.yaml`, blocks on unresolved gaps), referential integrity, and floor guard. Runnable standalone against a parsed corpus to preview what a policy change would include/exclude before committing.
 
 **`build/build_ruleset.py`** is the merge-and-filter engine described in §5.
 
