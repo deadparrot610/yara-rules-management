@@ -28,7 +28,7 @@ Build outputs land in `dist/` (gitignored): `merged_rules.yara`, `merged_rules.y
 - **Overrides** — `overrides/overrides.yara`, in-house rules that *replace* specific vendor rules.
 
 ### Override = removal, not coexistence
-YARA rejects duplicate identifiers in a single compilation unit. Overriding a vendor rule means **removing that vendor rule from the corpus** before compilation. Which vendor identifiers each override supersedes is declared in `overrides/override_manifest.yaml`. A stale override (override names a vendor rule that no longer exists) is a hard failure by default — it means a suppressed detection may have silently re-enabled.
+YARA rejects duplicate identifiers in a single compilation unit. Overriding a vendor rule means **removing that vendor rule from the corpus** before compilation. Which vendor identifiers each override supersedes is declared in `overrides/override_manifest.yaml`. A stale override (override names a vendor rule that no longer exists) blocks the pipeline and requires a reviewer to record a keep/discard decision in `overrides/stale_override_decisions.yaml`; subsequent runs apply recorded decisions automatically. An unresolved stale override with no recorded decision is always a hard block.
 
 ### Filter policy
 `filters/filter_policy.yaml` is a **selection layer** on the post-merge corpus. It never edits or deletes source rules — a filtered-out rule stays in the repo. Filters run **after** the override strip; a filter cannot resurrect a superseded rule.
@@ -57,7 +57,7 @@ A referenced rule must precede the rule that references it. Default emission ord
 |---|---|---|
 | D-1 | Rule consumer / YARA engine target | **RESOLVED:** Corelight Fleet Manager — modules `pe`, `elf`, `math` (verify `dotnet` before use) |
 | D-5 | Vendor file granularity | **RESOLVED:** multiple `.yara` files in `vendor/`; each update via MR |
-| D-4 | Stale-override policy | hard fail |
+| D-4 | Stale-override policy | **RESOLVED:** manual checkpoint; reviewer keep/discard decision recorded in `overrides/stale_override_decisions.yaml` |
 | D-8 | Same-specificity filter tie-break | **RESOLVED:** `exclude_wins` |
 | D-9 | Filter default mode | **RESOLVED:** `include_all` (denylist) |
 | D-10 | Coverage-gap policy | hard fail |
