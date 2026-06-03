@@ -18,7 +18,7 @@ python scripts/apply_filters.py --preview  # preview filter effect without build
 pytest tests/                            # run test suite against built ruleset
 ```
 
-Build outputs land in `dist/` (gitignored): `merged_rules.yara`, `merged_rules.yarc`, `build_manifest.json`.
+Build outputs land in `dist/` (gitignored): `merged_rules.yara`, `build_manifest.json`.
 
 ## Architecture
 
@@ -49,7 +49,7 @@ Parse → load manifest + policy + config → validate overrides → strip super
 A referenced rule must precede the rule that references it. Default emission order: vendor-remainder → overrides → custom. Intra-corpus references trigger topological reordering; a cycle is a compile error.
 
 ### Config is the single source of truth
-`config/build.yaml` holds `output_formats`, `yara_modules`, `external_variables`, `override_policy`, `filter_conflict_policy`, and `required_meta`. All scripts (build, lint, test harness) read it — never hardcode these values.
+`config/build.yaml` holds `output_formats`, `yara_modules`, `external_variables`, `stale_override_decisions`, `coverage_gap_decisions`, `filter_conflict_policy`, and `required_meta`. All scripts (build, lint, test harness) read it — never hardcode these values.
 
 ## Open decisions (implement as configurable defaults)
 
