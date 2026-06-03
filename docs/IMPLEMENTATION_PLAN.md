@@ -16,15 +16,15 @@ This is the build order. It is sequenced so the riskiest, most load-bearing comp
 ---
 
 ## Phase 0 — Scaffold
-**Build:** repository tree from ARCHITECTURE.md §2; `config/build.yaml` with defaults from DECISIONS.md; `requirements.txt` (`plyara`, `yara-python`, `pytest`, `pyyaml`); `.gitignore` (ignore `dist/`); one placeholder `.yara` file in `vendor/`, one sample `custom/` rule, an empty `overrides/` set, empty `override_manifest.yaml`, and an empty `filters/filter_policy.yaml` (`default_mode: include_all`, no filters).
+**Build:** repository tree from ARCHITECTURE.md §2; `config/build.yaml` with defaults from DECISIONS.md; `requirements.txt` (`plyara`, `yara-python`, `pytest`, `pyyaml`); `.gitignore` (ignore `dist/`); one placeholder `.yara` file in `rules/vendor/`, one sample `rules/custom/` rule, an empty `rules/overrides/` set, empty `override_manifest.yaml`, and an empty `filters/filter_policy.yaml` (`default_mode: include_all`, no filters).
 **Done when:** `pip install -r requirements.txt` succeeds and the tree matches the design.
 
 ## Phase 1 — Merge engine (core; build first)
-**Build:** `build/build_ruleset.py` doing parse → load manifest → strip superseded → collision check → order → emit → compile → write `build_manifest.json`, per ARCHITECTURE.md §5 (filter step stubbed/pass-through for now).
+**Build:** `scripts/build_ruleset.py` doing parse → load manifest → strip superseded → collision check → order → emit → compile → write `build_manifest.json`, per ARCHITECTURE.md §5 (filter step stubbed/pass-through for now).
 **Done when:** given a real vendor file plus at least one override, it produces `dist/merged_rules.yara`, the superseded vendor rule is absent from the output, the merged corpus compiles via yara-python, and the manifest lists what was removed. **Validate this against an actual vendor file before proceeding** — everything else hangs off it.
 
 ## Phase 2 — Override validation & stale detection
-**Build:** `scripts/check_overrides.py` implementing the manifest rules (override_rule exists, supersedes exists in vendor, no duplicate claims), wired into the build and runnable standalone. Implement the stale-override checkpoint from ARCHITECTURE.md §3.3: block on any stale entry with no recorded decision in `overrides/stale_override_decisions.yaml`; apply recorded decisions automatically; report required cleanup actions for `discard` decisions.
+**Build:** `scripts/check_overrides.py` implementing the manifest rules (override_rule exists, supersedes exists in vendor, no duplicate claims), wired into the build and runnable standalone. Implement the stale-override checkpoint from ARCHITECTURE.md §3.3: block on any stale entry with no recorded decision in `rules/overrides/stale_override_decisions.yaml`; apply recorded decisions automatically; report required cleanup actions for `discard` decisions.
 **Done when:** an override naming a nonexistent vendor rule blocks with a clear checkpoint prompt; a reviewer-recorded `keep` decision causes a subsequent run to pass; a reviewer-recorded `discard` decision is reported as a required cleanup action; an override naming a duplicate-claimed vendor rule errors; and a stale entry with no recorded decision is always a hard block.
 
 ## Phase 3 — Filter policy engine

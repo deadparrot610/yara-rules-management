@@ -1,0 +1,12 @@
+output_formats: [source]
+yara_modules: [pe, elf, math]
+external_variables:
+  filename: ""
+  filepath: ""
+  filetype: ""
+stale_override_decisions: rules/overrides/stale_override_decisions.yaml
+coverage_gap_decisions: filters/coverage_gap_decisions.yaml
+filter_conflict_policy: exclude_wins
+required_meta: [author, date, description, reference, severity]
+min_output_rules: 1
+on_empty_output: fail
