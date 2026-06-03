@@ -58,9 +58,7 @@ The baseline before any filter matches.
 
 ### D-10 — Filter-induced coverage-gap policy
 When a filter excludes an override rule whose superseded vendor rules were already removed (neither vendor detection nor replacement remains).
-- **Options:** hard fail vs. blocking warning.
-- **Proposed default:** **hard fail** — mirrors the stale-override stance (D-4); a silent coverage gap is exactly what the pipeline exists to prevent.
-- **Status:** _open; default recommended._
+- **Status:** **RESOLVED — see Section 3.**
 
 ### D-11 — Single policy vs. multiple output profiles
 Whether the build emits one filtered ruleset or several (e.g. an endpoint profile and a network profile from the same corpus).
@@ -89,3 +87,4 @@ Whether the build emits one filtered ruleset or several (e.g. an endpoint profil
 | D-8 | **Filter tie-break: `exclude_wins`** | 2026-06-02 | When two same-specificity filters conflict, the exclude action wins. Fail-safe toward a smaller, more deliberate deployment. |
 | D-9 | **Filter default mode: `include_all` (denylist)** | 2026-06-02 | Everything ships unless explicitly excluded. Vendor corpora are large; allowlisting from scratch risks shipping almost nothing. |
 | D-4 | **Stale-override policy: manual checkpoint with persistent decisions file** | 2026-06-02 | When a stale override is detected the pipeline blocks and prompts a reviewer to decide: **keep** (retain the override rule even though the vendor rule it once superseded is gone) or **discard** (remove the override entry). The reviewer's decision is recorded in `overrides/stale_override_decisions.yaml` (committed to the repo) so subsequent pipeline runs apply it automatically without re-prompting. An unresolved stale override with no recorded decision is always a hard block. |
+| D-10 | **Coverage-gap policy: manual checkpoint with persistent decisions file** | 2026-06-02 | When a filter excludes an override rule whose superseded vendor rules were already removed, the pipeline blocks and prompts a reviewer to decide: **keep** (consciously accept that neither detection runs) or **discard** (revise the filter so the override rule is included). The reviewer's decision is recorded in `filters/coverage_gap_decisions.yaml` (committed to the repo) so subsequent pipeline runs apply it automatically. An unresolved coverage gap with no recorded decision is always a hard block. Mirrors D-4. |
