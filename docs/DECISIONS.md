@@ -62,8 +62,7 @@ When a filter excludes an override rule whose superseded vendor rules were alrea
 
 ### D-11 — Single policy vs. multiple output profiles
 Whether the build emits one filtered ruleset or several (e.g. an endpoint profile and a network profile from the same corpus).
-- **Proposed default:** **single active filter policy → single output** for v1 (matches the original single-file requirement). Multiple profiles are a natural later extension: the same engine run per-profile policy to emit several artifacts. Designing the filter engine to take a policy as input keeps that door open.
-- **Status:** _open; v1 stays single._
+- **Status:** **RESOLVED — see Section 3.**
 
 ## 2. Standing assumptions (carried into the design)
 
@@ -88,3 +87,4 @@ Whether the build emits one filtered ruleset or several (e.g. an endpoint profil
 | D-9 | **Filter default mode: `include_all` (denylist)** | 2026-06-02 | Everything ships unless explicitly excluded. Vendor corpora are large; allowlisting from scratch risks shipping almost nothing. |
 | D-4 | **Stale-override policy: manual checkpoint with persistent decisions file** | 2026-06-02 | When a stale override is detected the pipeline blocks and prompts a reviewer to decide: **keep** (retain the override rule even though the vendor rule it once superseded is gone) or **discard** (remove the override entry). The reviewer's decision is recorded in `overrides/stale_override_decisions.yaml` (committed to the repo) so subsequent pipeline runs apply it automatically without re-prompting. An unresolved stale override with no recorded decision is always a hard block. |
 | D-10 | **Coverage-gap policy: manual checkpoint with persistent decisions file** | 2026-06-02 | When a filter excludes an override rule whose superseded vendor rules were already removed, the pipeline blocks and prompts a reviewer to decide: **keep** (consciously accept that neither detection runs) or **discard** (revise the filter so the override rule is included). The reviewer's decision is recorded in `filters/coverage_gap_decisions.yaml` (committed to the repo) so subsequent pipeline runs apply it automatically. An unresolved coverage gap with no recorded decision is always a hard block. Mirrors D-4. |
+| D-11 | **Single output file; filter engine accepts policy as an argument** | 2026-06-02 | The build emits one merged ruleset under one active filter policy. The filter engine takes the policy as an input argument (not a global) so multiple output profiles can be added later without a rewrite — each profile would supply its own policy file and receive its own output artifact. |
