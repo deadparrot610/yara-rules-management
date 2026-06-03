@@ -9,6 +9,7 @@
 This document describes how the system in the PRD is built. It assumes the reader has read the PRD's Section 2 (the duplicate-identifier constraint), which is the foundation for everything here.
 
 **Changelog**
+- v0.3 — Resolved D-4: stale-override policy is now a manual checkpoint with a persistent decisions file (`overrides/stale_override_decisions.yaml`); updated §2, §3.2, added §3.3, updated §5 and §7.
 - v0.2 — Added §4 Filter policy model; updated §2 (filters/ tree), §5 build sequence (filter stage + cross-checks), §7 components (apply_filters.py), §10 CI, and the build manifest contents.
 - v0.1 — Initial draft.
 
@@ -47,8 +48,9 @@ yara-rules/
 │   ├── apt/
 │   └── tooling/
 ├── overrides/
-│   ├── overrides.yara          # the replacement rules
-│   └── override_manifest.yaml  # which vendor rules each override supersedes + why
+│   ├── overrides.yara                  # the replacement rules
+│   ├── override_manifest.yaml          # which vendor rules each override supersedes + why
+│   └── stale_override_decisions.yaml   # reviewer keep/discard decisions for stale overrides
 ├── filters/
 │   └── filter_policy.yaml      # declarative include/exclude selection layer
 ├── build/
@@ -87,8 +89,38 @@ overrides:
 
 Validation rules the build enforces on the manifest:
 - Every `override_rule` must be a real identifier defined in `overrides/`.
-- Every entry in `supersedes` must currently exist in the vendor corpus. A miss is a **stale override** (FR-6) and is treated per the configured policy (default: hard fail). This is the safeguard against a vendor update silently re-enabling a suppressed detection.
+- Every entry in `supersedes` must currently exist in the vendor corpus. A miss is a **stale override** (FR-6) — handled via the checkpoint mechanism in §3.3.
 - No two override entries may claim the same vendor identifier (ambiguous removal).
+
+### 3.3 Stale-override checkpoint and decisions file
+
+A stale override (a `supersedes` entry that names a vendor rule no longer present in the corpus) means a detection the team believed was suppressed may have silently returned. Rather than hard-failing or silently continuing, the pipeline **blocks and requires a reviewer decision** for each stale entry.
+
+**Checkpoint flow:**
+1. `check_overrides.py` detects one or more stale entries and prints a clear prompt per entry, listing the override rule, the missing vendor identifier, and the two options.
+2. The reviewer decides for each stale entry:
+   - **keep** — the override rule is still valuable (e.g. it catches variants not covered by the now-absent vendor rule); retain it in the corpus without a supersession claim for this identifier.
+   - **discard** — the override rule is no longer needed now that the vendor rule is gone; remove it from the override manifest and `overrides.yara`.
+3. The reviewer records the decision in `overrides/stale_override_decisions.yaml` and commits it. On the next pipeline run the checkpoint reads this file, applies recorded decisions automatically, and only blocks for entries that still have no recorded decision.
+
+**Decisions file format:**
+
+```yaml
+stale_override_decisions:
+  - override_rule: Custom_Override_Emotet
+    missing_vendor_rule: Vendor_Emotet_v3
+    decision: keep                  # keep | discard
+    reason: "Still catches Emotet loaders not covered by v3"
+    reviewer: a.analyst
+    date: 2026-06-02
+    ticket: SEC-1234
+```
+
+**Invariants:**
+- A stale entry with no recorded decision is always a hard block — there is no silent pass-through.
+- A `discard` decision signals that the override rule and its manifest entry should be removed; `check_overrides.py` reports this as a required cleanup action rather than applying it automatically (a human removes the rule and entry via MR).
+- The decisions file is committed to the repo and version-controlled, providing a full audit trail of every stale-override resolution.
+- When a vendor update re-introduces a previously absent identifier, the corresponding decision record becomes stale itself; `check_overrides.py` warns and the reviewer removes or supersedes the old decision.
 
 ## 4. Filter policy model (rule selection layer)
 
@@ -154,7 +186,7 @@ For each YARA rule `R` in the post-merge corpus:
 Sequence:
 1. **Parse** the vendor file(s), `overrides/`, and `custom/` with `plyara`, producing per-rule structures keyed by identifier (with tags and meta retained for filtering).
 2. **Load** `override_manifest.yaml`, `filters/filter_policy.yaml`, and `config/build.yaml`.
-3. **Validate overrides** via the manifest rules in §3.2 (delegates to `check_overrides.py`). Fail per policy on stale/ambiguous entries.
+3. **Validate overrides** via the manifest rules in §3.2–§3.3 (delegates to `check_overrides.py`). Block on any stale entry with no recorded decision in `stale_override_decisions.yaml`; apply recorded decisions automatically.
 4. **Strip** every superseded identifier from the parsed vendor set (override merge).
 5. **Apply the filter policy** via `apply_filters.py` (§4.2), producing the included set and the exclusion record.
 6. **Run filter cross-checks** (§4.3): coverage-gap, referential integrity, empty/floor guards.
@@ -180,7 +212,7 @@ external_variables:
   filename: ""
   filepath: ""
   filetype: ""
-override_policy: fail                  # fail | warn
+stale_override_decisions: overrides/stale_override_decisions.yaml
 filter_conflict_policy: exclude_wins   # exclude_wins | last_match_wins | error
 required_meta: [author, date, description, reference, severity]
 ```
@@ -189,7 +221,7 @@ required_meta: [author, date, description, reference, severity]
 
 **`scripts/lint.py`** compiles each `.yara` file individually (fast, source-attributed syntax failure), confirms `plyara` can parse it, validates that every rule carries the metadata named in `required_meta` plus naming conventions, and validates the **filter policy schema** (well-formed scopes/actions/selectors; warns when a `rule:` scope or exact `name` selector references an identifier not present in the corpus). Runs in the lint stage.
 
-**`scripts/check_overrides.py`** implements the manifest validation in §3.2 and can be run standalone (useful immediately after a vendor file update, before merging).
+**`scripts/check_overrides.py`** implements the manifest validation in §3.2–§3.3: detects stale and ambiguous override entries, reads `stale_override_decisions.yaml` to apply recorded reviewer decisions, and blocks on any unresolved stale entry. Runnable standalone (useful immediately after a vendor file update, before merging).
 
 **`scripts/apply_filters.py`** implements the resolution algorithm and cross-checks in §4.2–§4.3. Runnable standalone against a parsed corpus to preview what a policy change would include/exclude before committing.
 

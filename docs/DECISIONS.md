@@ -33,9 +33,7 @@ How a capture reaches the manual job, and whether to scan raw or carve files fir
 
 ### D-4 — Stale-override policy
 When an override names a vendor rule that no longer exists in the vendor file.
-- **Options:** hard fail the pipeline vs. emit a blocking warning for review.
-- **Proposed default:** **hard fail** — a stale override means a suppressed detection may have silently returned; surface it loudly.
-- **Status:** _open; default recommended._
+- **Status:** **RESOLVED — see Section 3.**
 
 ### D-5 — Vendor file granularity and update cadence
 One `vendor_rules.yara` vs. multiple vendor files; how often updates arrive and who commits them.
@@ -90,3 +88,4 @@ Whether the build emits one filtered ruleset or several (e.g. an endpoint profil
 | D-7 | **Semantic version tags (e.g. `v1.4.0`)** | 2026-06-02 | Releases are tagged with semantic version strings; the build manifest records exact input hashes regardless of the version tag. |
 | D-8 | **Filter tie-break: `exclude_wins`** | 2026-06-02 | When two same-specificity filters conflict, the exclude action wins. Fail-safe toward a smaller, more deliberate deployment. |
 | D-9 | **Filter default mode: `include_all` (denylist)** | 2026-06-02 | Everything ships unless explicitly excluded. Vendor corpora are large; allowlisting from scratch risks shipping almost nothing. |
+| D-4 | **Stale-override policy: manual checkpoint with persistent decisions file** | 2026-06-02 | When a stale override is detected the pipeline blocks and prompts a reviewer to decide: **keep** (retain the override rule even though the vendor rule it once superseded is gone) or **discard** (remove the override entry). The reviewer's decision is recorded in `overrides/stale_override_decisions.yaml` (committed to the repo) so subsequent pipeline runs apply it automatically without re-prompting. An unresolved stale override with no recorded decision is always a hard block. |
