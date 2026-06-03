@@ -2,13 +2,14 @@
 
 | | |
 |---|---|
-| **Status** | Draft v0.2 |
-| **Companion docs** | PRD.md, DECISIONS.md, IMPLEMENTATION_PLAN.md |
+| **Status** | Approved v1.0 |
+| **Companion docs** | [docs/PRD.md](PRD.md), [docs/DECISIONS.md](DECISIONS.md), [docs/IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) |
 | **Last updated** | 2026-06-02 |
 
 This document describes how the system in the PRD is built. It assumes the reader has read the PRD's Section 2 (the duplicate-identifier constraint), which is the foundation for everything here.
 
 **Changelog**
+- v1.0 — Approved; consistency review complete; all decisions resolved except D-3 and D-6.
 - v0.4 — Resolved D-10: coverage-gap policy is now a manual checkpoint with a persistent decisions file (`filters/coverage_gap_decisions.yaml`); updated §2, §4.3, added §4.5, updated §5 and §7.
 - v0.3 — Resolved D-4: stale-override policy is now a manual checkpoint with a persistent decisions file (`overrides/stale_override_decisions.yaml`); updated §2, §3.2, added §3.3, updated §5 and §7.
 - v0.2 — Added §4 Filter policy model; updated §2 (filters/ tree), §5 build sequence (filter stage + cross-checks), §7 components (apply_filters.py), §10 CI, and the build manifest contents.
@@ -25,8 +26,7 @@ The system is a Git repository plus a CI/CD pipeline. Authors commit rules into 
                               │                                          │                              │
                               ▼                                          ▼                              ▼
                      dist/merged_rules.yara                   JUnit results + match report     versioned release artifact
-                     dist/merged_rules.yarc                   false-positive gate              + build manifest
-                     build_manifest.json
+                     build_manifest.json                      false-positive gate              + build manifest
 ```
 
 ## 2. Repository structure
@@ -35,11 +35,12 @@ The system is a Git repository plus a CI/CD pipeline. Authors commit rules into 
 yara-rules/
 ├── .gitlab-ci.yml
 ├── README.md
-├── PRD.md
-├── ARCHITECTURE.md
-├── DECISIONS.md
-├── IMPLEMENTATION_PLAN.md
 ├── requirements.txt
+├── docs/
+│   ├── PRD.md
+│   ├── ARCHITECTURE.md
+│   ├── DECISIONS.md
+│   └── IMPLEMENTATION_PLAN.md
 ├── config/
 │   └── build.yaml              # output formats, YARA modules, external vars, policy flags
 ├── vendor/
@@ -218,13 +219,13 @@ coverage_gap_decisions:
 Sequence:
 1. **Parse** the vendor file(s), `overrides/`, and `custom/` with `plyara`, producing per-rule structures keyed by identifier (with tags and meta retained for filtering).
 2. **Load** `override_manifest.yaml`, `filters/filter_policy.yaml`, and `config/build.yaml`.
-3. **Validate overrides** via the manifest rules in §3.2–§3.3 (delegates to `check_overrides.py`). Block on any stale entry with no recorded decision in `stale_override_decisions.yaml`; apply recorded decisions automatically.
+3. **Validate overrides** via the manifest rules in §3.2–§3.3 (delegates to `check_overrides.py`). Block on any stale entry with no recorded decision in `overrides/stale_override_decisions.yaml`; apply recorded decisions automatically.
 4. **Strip** every superseded identifier from the parsed vendor set (override merge).
 5. **Apply the filter policy** via `apply_filters.py` (§4.2), producing the included set and the exclusion record.
-6. **Run filter cross-checks** (§4.3): coverage-gap (reads `coverage_gap_decisions.yaml`, blocks on unresolved gaps), referential integrity, empty/floor guards.
+6. **Run filter cross-checks** (§4.3): coverage-gap (reads `filters/coverage_gap_decisions.yaml`, blocks on unresolved gaps), referential integrity, empty/floor guards.
 7. **Detect residual collisions** — any identifier appearing in more than one source after stripping/filtering is an error (e.g. a custom rule accidentally reusing a vendor name without an override declaration).
 8. **Order** the emitted rules so dependencies resolve (see §6): vendor-remainder → overrides → custom, with topological adjustment if intra-set references exist.
-9. **Emit** `dist/merged_rules.yara` (source) and/or compile to `dist/merged_rules.yarc` per configured formats.
+9. **Emit** `dist/merged_rules.yara` (source) and/or compile to `dist/merged_rules.yarc` per configured formats. (Current deployment emits source only; D-2.)
 10. **Compile** the merged-and-filtered corpus with `yara-python` as the authoritative validation gate (FR-7). Compilation here is non-negotiable even when only source output is requested — it is how "the ruleset is valid" is proven.
 11. **Write** `dist/build_manifest.json`: rule counts by source, overridden/removed vendor identifiers, **filtered-out rules with responsible filter id and reason**, per-source-file SHA-256, tool/engine versions, and build version.
 
@@ -232,19 +233,20 @@ Sequence:
 
 **Ordering.** YARA conditions may reference other rules (including private rules), and a referenced rule must be defined earlier in the unit. The default emission order assumes custom/override rules may reference vendor rules but not vice versa. Where intra-corpus references exist, the build orders topologically; a cycle or unresolved reference surfaces as a compile error in §5 step 10, which is the backstop.
 
-**Modules.** Any `import "pe"`, `import "dotnet"`, `import "math"`, etc. must be supported by both the CI build image and the deployment engine, or compilation/scan fails. The authoritative module list lives in `config/build.yaml` and the CI image is built to satisfy it.
+**Modules.** Any module imported by the ruleset must be supported by both the CI build image and the deployment engine, or compilation/scan fails. The authoritative module list lives in `config/build.yaml` and the CI image is built to satisfy it. For the current Corelight Fleet Manager deployment (D-1): `pe`, `elf`, and `math` are supported; verify `dotnet` support before use.
 
 **External variables.** Rules using externals (`filename`, `filepath`, `filetype`, custom externals) require those declared at compile time and supplied at scan time. They are declared once in `config/build.yaml` and consumed by the build, the test harness, and documented for the deployment target.
 
 ```yaml
 # config/build.yaml (illustrative)
-output_formats: [source, compiled]   # source | compiled | both
-yara_modules: [pe, math]
+output_formats: [source]             # source | compiled | both
+yara_modules: [pe, elf, math]
 external_variables:
   filename: ""
   filepath: ""
   filetype: ""
 stale_override_decisions: overrides/stale_override_decisions.yaml
+coverage_gap_decisions: filters/coverage_gap_decisions.yaml
 filter_conflict_policy: exclude_wins   # exclude_wins | last_match_wins | error
 required_meta: [author, date, description, reference, severity]
 ```
@@ -253,9 +255,9 @@ required_meta: [author, date, description, reference, severity]
 
 **`scripts/lint.py`** compiles each `.yara` file individually (fast, source-attributed syntax failure), confirms `plyara` can parse it, validates that every rule carries the metadata named in `required_meta` plus naming conventions, and validates the **filter policy schema** (well-formed scopes/actions/selectors; warns when a `rule:` scope or exact `name` selector references an identifier not present in the corpus). Runs in the lint stage.
 
-**`scripts/check_overrides.py`** implements the manifest validation in §3.2–§3.3: detects stale and ambiguous override entries, reads `stale_override_decisions.yaml` to apply recorded reviewer decisions, and blocks on any unresolved stale entry. Runnable standalone (useful immediately after a vendor file update, before merging).
+**`scripts/check_overrides.py`** implements the manifest validation in §3.2–§3.3: detects stale and ambiguous override entries, reads `overrides/stale_override_decisions.yaml` to apply recorded reviewer decisions, and blocks on any unresolved stale entry. Runnable standalone (useful immediately after a vendor file update, before merging).
 
-**`scripts/apply_filters.py`** implements the resolution algorithm and cross-checks in §4.2–§4.5: filter resolution, coverage-gap detection (reads `coverage_gap_decisions.yaml`, blocks on unresolved gaps), referential integrity, and floor guard. Runnable standalone against a parsed corpus to preview what a policy change would include/exclude before committing.
+**`scripts/apply_filters.py`** implements the resolution algorithm and cross-checks in §4.2–§4.5: filter resolution, coverage-gap detection (reads `filters/coverage_gap_decisions.yaml`, blocks on unresolved gaps), referential integrity, and floor guard. Runnable standalone against a parsed corpus to preview what a policy change would include/exclude before committing.
 
 **`build/build_ruleset.py`** is the merge-and-filter engine described in §5.
 
@@ -315,4 +317,4 @@ The job then either scans the raw PCAP with YARA directly, or — usually more u
 
 ## 12. Output and versioning strategy
 
-Default emits both `merged_rules.yara` (source) and `merged_rules.yarc` (compiled). Compiled output loads faster but is bound to the exact YARA engine version and does not move reliably across versions (NFR-5); it is only safe to consume where the target version is pinned. Source output is version-independent and compiled at the destination. Releases are tagged (semantic version recommended) and the build manifest ties an artifact to its exact inputs via source hashes and records what was overridden and filtered.
+Emits `merged_rules.yara` (source only; D-2). Corelight Fleet Manager ingests source rules and handles its own compilation internally, so `.yarc` is not emitted as an artifact. The CI compile step still runs as the authoritative validation gate. Releases are tagged (semantic version recommended) and the build manifest ties an artifact to its exact inputs via source hashes and records what was overridden and filtered.

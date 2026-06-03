@@ -2,12 +2,15 @@
 
 | | |
 |---|---|
-| **Status** | Draft v0.2 |
+| **Status** | Approved v1.0 |
 | **Last updated** | 2026-06-02 |
 
 This document tracks decisions that shape the implementation. Open items have a **proposed default** so building can proceed; confirm or change them before or during the relevant phase. Resolved items move to Section 3 as a lightweight decision record.
 
 **Changelog**
+- v1.0 — Approved; all decisions resolved except D-3 and D-6.
+- v0.4 — Resolved D-10 (coverage-gap policy: manual checkpoint with `filters/coverage_gap_decisions.yaml`).
+- v0.3 — Resolved D-4 (stale-override policy: manual checkpoint with `overrides/stale_override_decisions.yaml`).
 - v0.2 — Added D-8…D-11 for the filter policy.
 - v0.1 — Initial draft (D-1…D-7).
 
@@ -81,10 +84,10 @@ Whether the build emits one filtered ruleset or several (e.g. an endpoint profil
 |---|---|---|---|
 | D-1 | **Consumer: Corelight Fleet Manager** — modules: `pe`, `elf`, `math`; YARA engine version pinned to what Corelight embeds | 2026-06-02 | Corelight Fleet Manager is the deployment target; it scans files extracted from network traffic via Zeek. Supports a well-defined YARA module set; does not support all modules (e.g. `dotnet` support should be verified before use). |
 | D-2 | **Output: source (`.yara`) only** | 2026-06-02 | Corelight Fleet Manager ingests source rules and handles its own compilation internally; `.yarc` is neither needed nor useful. CI compile step still runs as the validation gate but `.yarc` is not emitted as an artifact. |
+| D-4 | **Stale-override policy: manual checkpoint with persistent decisions file** | 2026-06-02 | When a stale override is detected the pipeline blocks and prompts a reviewer to decide: **keep** (retain the override rule even though the vendor rule it once superseded is gone) or **discard** (remove the override entry). The reviewer's decision is recorded in `overrides/stale_override_decisions.yaml` (committed to the repo) so subsequent pipeline runs apply it automatically without re-prompting. An unresolved stale override with no recorded decision is always a hard block. |
 | D-5 | **Multiple vendor files allowed; each update via MR** | 2026-06-02 | The `vendor/` directory may contain more than one `.yara` file (e.g. one per vendor feed). Every update — adding, replacing, or removing a vendor file — is committed through a merge request so the diff and stale-override check run before the change reaches the corpus. |
 | D-7 | **Semantic version tags (e.g. `v1.4.0`)** | 2026-06-02 | Releases are tagged with semantic version strings; the build manifest records exact input hashes regardless of the version tag. |
 | D-8 | **Filter tie-break: `exclude_wins`** | 2026-06-02 | When two same-specificity filters conflict, the exclude action wins. Fail-safe toward a smaller, more deliberate deployment. |
 | D-9 | **Filter default mode: `include_all` (denylist)** | 2026-06-02 | Everything ships unless explicitly excluded. Vendor corpora are large; allowlisting from scratch risks shipping almost nothing. |
-| D-4 | **Stale-override policy: manual checkpoint with persistent decisions file** | 2026-06-02 | When a stale override is detected the pipeline blocks and prompts a reviewer to decide: **keep** (retain the override rule even though the vendor rule it once superseded is gone) or **discard** (remove the override entry). The reviewer's decision is recorded in `overrides/stale_override_decisions.yaml` (committed to the repo) so subsequent pipeline runs apply it automatically without re-prompting. An unresolved stale override with no recorded decision is always a hard block. |
 | D-10 | **Coverage-gap policy: manual checkpoint with persistent decisions file** | 2026-06-02 | When a filter excludes an override rule whose superseded vendor rules were already removed, the pipeline blocks and prompts a reviewer to decide: **keep** (consciously accept that neither detection runs) or **discard** (revise the filter so the override rule is included). The reviewer's decision is recorded in `filters/coverage_gap_decisions.yaml` (committed to the repo) so subsequent pipeline runs apply it automatically. An unresolved coverage gap with no recorded decision is always a hard block. Mirrors D-4. |
 | D-11 | **Single output file; filter engine accepts policy as an argument** | 2026-06-02 | The build emits one merged ruleset under one active filter policy. The filter engine takes the policy as an input argument (not a global) so multiple output profiles can be added later without a rewrite — each profile would supply its own policy file and receive its own output artifact. |

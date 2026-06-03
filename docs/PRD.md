@@ -2,11 +2,12 @@
 
 | | |
 |---|---|
-| **Status** | Draft v0.2 |
+| **Status** | Approved v1.0 |
 | **Last updated** | 2026-06-02 |
 | **Repository** | GitLab fclabs-group/yara-rules |
 
 **Changelog**
+- v1.0 — Approved; consistency review complete; FR-6, FR-9, FR-16, FR-22 updated to reflect resolved decisions.
 - v0.2 — Added filter policy (rule selection layer): FR-17…FR-24, related open questions, decisions D-8…D-11.
 - v0.1 — Initial draft.
 
@@ -62,23 +63,23 @@ The filter policy (Section 5, FR-17 onward) operates as a selection layer on the
 | **FR-3** | The repository SHALL store override rules separate from custom and vendor rules. |
 | **FR-4** | Each override SHALL be accompanied by a machine-readable declaration of which vendor rule identifier(s) it supersedes, plus a human-readable reason and change reference (e.g. ticket ID and author). |
 | **FR-5** | The build SHALL parse the vendor corpus, remove every vendor rule named in the override declarations, and produce a merged corpus containing the vendor remainder, the overrides, and the custom rules. |
-| **FR-6** | The build SHALL fail (or emit a blocking warning, per policy) if any override references a vendor rule identifier that does not exist in the current vendor file (stale override detection). |
+| **FR-6** | The build SHALL block if any override references a vendor rule identifier that does not exist in the current vendor file (stale override detection), requiring a reviewer keep/discard decision recorded in `overrides/stale_override_decisions.yaml` before the pipeline can proceed. |
 | **FR-7** | The pipeline SHALL verify the entire corpus by compiling the merged-and-filtered ruleset with the YARA engine; a compilation failure SHALL fail the pipeline. |
 | **FR-8** | The pipeline SHALL also lint each rule file individually so that a syntax error is attributed to its source file, and SHALL validate that each rule carries required metadata (e.g. author, date, description, reference, severity) per a defined schema. |
-| **FR-9** | The build SHALL emit a single deployable output ruleset. Output format (source `.yara`, compiled `.yarc`, or both) is configurable; default is both. |
+| **FR-9** | The build SHALL emit a single deployable output ruleset. Output format (source `.yara`, compiled `.yarc`, or both) is configurable; default is source only (D-2). |
 | **FR-10** | The build SHALL emit a build manifest recording rule counts by source, the list of vendor rules that were overridden/removed, source file hashes, and the build version. |
 | **FR-11** | The pipeline SHALL run automated tests that scan a set of fixtures with the built ruleset and assert expected matches and expected non-matches per a declarative test specification. |
 | **FR-12** | The test suite SHALL include a clean/benign corpus and SHALL fail the pipeline if any rule matches it (false-positive gate). |
 | **FR-13** | The pipeline SHALL support an optional, on-demand job that accepts an uploaded PCAP and scans it (or files/streams carved from it) with the built ruleset, reporting matches as an artifact. |
 | **FR-14** | The pipeline SHALL store build and test artifacts so they are downloadable from the GitLab UI/API; released versions SHALL be published as durable, versioned artifacts. |
 | **FR-15** | Test results SHALL be published in a format GitLab renders natively in merge requests (JUnit XML). |
-| **FR-16** | The configuration of YARA modules in use (e.g. `pe`, `dotnet`, `math`) and any required external variables SHALL be declared centrally so the build, the test harness, and the deployment target agree. |
+| **FR-16** | The configuration of YARA modules in use (e.g. `pe`, `elf`, `math`) and any required external variables SHALL be declared centrally so the build, the test harness, and the deployment target agree. |
 | **FR-17** | The repository SHALL store a declarative, version-controlled **filter policy** that selects which rules from the merged corpus appear in the final output, without removing them from source. |
 | **FR-18** | A filter SHALL be scopeable **globally**, to a **source ruleset** (vendor, custom, or overrides), or to an **individual rule identifier**. |
 | **FR-19** | A filter SHALL support **include** and **exclude** actions, with selectors matching on rule **name** (exact/glob/regex), **tags**, and **metadata** fields. |
 | **FR-20** | Filter resolution SHALL be deterministic: a more-specific scope SHALL take precedence over a less-specific one (rule > ruleset > global), and the same-specificity tie-break policy SHALL be defined and documented. |
 | **FR-21** | The baseline selection mode SHALL be configurable between **include-all** (exclusions remove rules from a fully-included corpus) and **include-none** (only explicitly included rules are kept). |
-| **FR-22** | The build SHALL detect and block (or warn, per policy) any filter that excludes an **override** rule whose superseded vendor rules were already removed, because this leaves a detection **coverage gap**. |
+| **FR-22** | The build SHALL detect and block any filter that excludes an **override** rule whose superseded vendor rules were already removed, because this leaves a detection **coverage gap**, requiring a reviewer keep/discard decision recorded in `filters/coverage_gap_decisions.yaml` before the pipeline can proceed. |
 | **FR-23** | After filtering, the build SHALL enforce **referential integrity** (an excluded rule still referenced in the condition of an included rule is an error) and SHALL guard against an **empty or below-floor** output. |
 | **FR-24** | The build manifest SHALL record each rule excluded by filtering, the filter responsible (by id), and its reason. |
 
@@ -100,7 +101,7 @@ The project meets its v1 bar when: a vendor file, at least one custom rule, and 
 
 ## 8. Assumptions and dependencies
 
-- The deployment/consumption target and its YARA engine version are determined externally; this pipeline produces artifacts but does not push to that target. _(Open — see DECISIONS.md.)_
+- The deployment/consumption target is Corelight Fleet Manager (D-1 resolved); this pipeline produces artifacts but does not push to that target.
 - Vendor rules arrive as one or more `.yara` text files and are syntactically valid as received.
 - `plyara` is suitable for parsing the vendor and in-house rule sets (rule-name/tag/meta extraction, removal, reordering); `yara-python`/`yara` is the authority for compilation and scanning.
 - GitLab CI/CD with Docker executors and the GitLab Package Registry are available to the project.
@@ -111,13 +112,9 @@ Automated deployment to the detection platform; non-YARA detection formats; a ho
 
 ## 10. Open questions
 
-These are tracked with proposed defaults in `DECISIONS.md`. The most consequential is the **rule consumer**, because it determines required module support and output format.
+Most questions have been resolved; see `DECISIONS.md` §3 for the full decision log. Two items remain genuinely open:
 
-1. What system consumes the final ruleset (SIEM, EDR, ClamAV, custom scanner), and is its YARA engine version pinned? _(D-1)_
-2. Output format: source, compiled, or both? _(D-2; default both)_
-3. PCAP delivery mechanism (CI file variable vs object storage) and whether to scan raw captures or carve files first. _(D-3)_
-4. Override-on-stale policy: hard fail vs. warn. _(D-4)_
-5. Filter conflict tie-break at equal specificity: exclude-wins, last-match-wins, or hard-error? _(D-8; default exclude-wins)_
-6. Filter default mode: include-all (denylist) vs include-none (allowlist)? _(D-9; default include-all)_
-7. Filter-induced coverage-gap policy: fail vs warn? _(D-10; default fail)_
-8. One filter policy now, or multiple output profiles later? _(D-11; default single policy)_
+1. PCAP delivery mechanism (CI file variable vs object storage) and whether to scan raw captures or carve files first. _(D-3; open, lowest priority)_
+2. Sample sourcing for tests: synthetic fixtures only vs. also hash-referenced samples from a secured store. _(D-6; open, working default is synthetic/inert in-repo)_
+
+Resolved decisions (for reference): D-1 (consumer: Corelight Fleet Manager), D-2 (source output only), D-4 (stale-override checkpoint with decisions file), D-5 (multiple vendor files via MR), D-7 (semantic versioning), D-8 (exclude-wins tie-break), D-9 (include-all default mode), D-10 (coverage-gap checkpoint with decisions file), D-11 (single output profile; filter engine takes policy as argument).
