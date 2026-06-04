@@ -323,9 +323,9 @@ def main() -> None:
     override_rules = parse_yara_files([override_path], "overrides")
     custom_rules = parse_yara_files(custom_paths, "custom")
 
-    # --- Phase 2 stub: stale-override validation ---
-    # import check_overrides
-    # check_overrides.validate(vendor_rules, override_rules, manifest_entries, config, root)
+    # --- Phase 2: stale-override validation ---
+    import check_overrides
+    check_overrides.validate(vendor_rules, override_rules, manifest_entries, config, root)
 
     # --- Strip superseded vendor rules ---
     vendor_remainder, removed_ids = strip_superseded(vendor_rules, manifest_entries)
