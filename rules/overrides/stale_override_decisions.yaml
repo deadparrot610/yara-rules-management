@@ -1,1 +1,7 @@
-stale_override_decisions: []
+stale_override_decisions:
+  - override_rule: Custom_Override_Placeholder
+    missing_vendor_rule: Vendor_Placeholder
+    decision: keep
+    reason: "Placeholder override kept for pipeline testing"
+    reviewer: fritz
+    date: "2026-06-03"
