@@ -34,13 +34,12 @@ def _parse_rules_standalone(paths: list) -> list:
     return records
 
 
-def _load_decisions(decisions_path: Path) -> dict:
-    """Load stale_override_decisions.yaml.
+def _load_decisions_file(decisions_path: Path, list_key: str, secondary_field: str) -> dict:
+    """Generic loader for pipeline decisions YAML files.
 
-    Returns a dict keyed by (override_rule, missing_vendor_rule) -> decision_str.
-    When an entry omits missing_vendor_rule, the key is (override_rule, None),
-    acting as a wildcard that covers all missing vendor IDs under that override rule.
-    Returns empty dict if the file does not exist.
+    Returns {(override_rule, secondary_field_value | None): decision_str}.
+    A None secondary value acts as a wildcard covering all secondaries for that override rule.
+    Returns {} when the file does not exist.
     """
     if not decisions_path.exists():
         return {}
@@ -51,13 +50,18 @@ def _load_decisions(decisions_path: Path) -> dict:
         print(f"ERROR: could not read {decisions_path}: {exc}", file=sys.stderr)
         sys.exit(1)
     result = {}
-    for entry in (data.get("stale_override_decisions") or []):
+    for entry in (data.get(list_key) or []):
         override_rule = entry.get("override_rule")
-        missing_vendor_rule = entry.get("missing_vendor_rule")  # None when absent
+        secondary = entry.get(secondary_field)  # None when absent → wildcard
         decision = (entry.get("decision") or "").strip().lower()
         if override_rule:
-            result[(override_rule, missing_vendor_rule)] = decision
+            result[(override_rule, secondary)] = decision
     return result
+
+
+def _load_decisions(decisions_path: Path) -> dict:
+    """Load stale_override_decisions.yaml; returns {(override_rule, missing_vendor_rule): decision}."""
+    return _load_decisions_file(decisions_path, "stale_override_decisions", "missing_vendor_rule")
 
 
 def _lookup_decision(decisions: dict, override_rule: str, vendor_id: str):
@@ -121,6 +125,11 @@ def validate(
             continue
 
         for vid in supersedes:
+            if vid in override_ids:
+                errors.append(
+                    f"supersedes entry {vid!r} in {override_rule!r} names an override rule; "
+                    f"only vendor rule identifiers may appear in supersedes"
+                )
             if vid in seen_claimed:
                 errors.append(
                     f"vendor rule {vid!r} is claimed by multiple override entries: "

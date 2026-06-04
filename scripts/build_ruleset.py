@@ -2,11 +2,9 @@
 """
 Build the merged YARA ruleset.
 
-Phase 1 scope: parse → load manifest → strip superseded vendor rules →
-               collision check → topological order → emit → compile → manifest.
-
-Phase 2 (stale-override validation via check_overrides.py) and
-Phase 3 (filter policy via apply_filters.py) are stubbed with clear markers.
+Build sequence: parse → validate overrides (check_overrides) → strip superseded
+vendor rules → apply filter policy (apply_filters) → collision check →
+topological order → emit source → compile (validation gate) → write manifest.
 """
 
 import sys
@@ -269,6 +267,7 @@ def _sha256(path: Path) -> str:
 def write_manifest(
     rules: list,
     removed_ids: list,
+    exclusion_record: list,
     source_files: list,
     dest: Path,
 ) -> None:
@@ -289,7 +288,7 @@ def write_manifest(
             "overrides": counts["overrides"],
         },
         "removed_vendor_rules": removed_ids,
-        "filtered_rules": [],   # populated in Phase 3
+        "filtered_rules": exclusion_record,
         "source_hashes": {
             str(p.relative_to(dest.parent.parent)): _sha256(p)
             for p in source_files
@@ -330,13 +329,16 @@ def main() -> None:
     # --- Strip superseded vendor rules ---
     vendor_remainder, removed_ids = strip_superseded(vendor_rules, manifest_entries)
 
-    # --- Phase 3 stub: filter policy ---
-    # import apply_filters
-    # filter_policy = load_filter_policy(root)
-    # included_rules, exclusion_record = apply_filters.run(
-    #     vendor_remainder + override_rules + custom_rules, filter_policy, root
-    # )
-    included_rules = vendor_remainder + override_rules + custom_rules
+    # --- Phase 3: filter policy ---
+    import apply_filters
+    filter_policy = load_filter_policy(root)
+    included_rules, exclusion_record = apply_filters.run(
+        vendor_remainder + override_rules + custom_rules,
+        filter_policy,
+        root,
+        manifest_entries,
+        config,
+    )
 
     # --- Collision check ---
     check_collisions(included_rules)
@@ -364,15 +366,17 @@ def main() -> None:
 
     # --- Write manifest ---
     all_source_files = vendor_paths + [override_path] + custom_paths
-    write_manifest(ordered, removed_ids, all_source_files, dist / "build_manifest.json")
+    write_manifest(ordered, removed_ids, exclusion_record, all_source_files, dist / "build_manifest.json")
 
     vendor_n = sum(1 for r in ordered if r.origin == "vendor")
     override_n = sum(1 for r in ordered if r.origin == "overrides")
     custom_n = sum(1 for r in ordered if r.origin == "custom")
+    filtered_n = len(exclusion_record)
     print(
         f"Build complete: {len(ordered)} rules "
-        f"({vendor_n} vendor, {override_n} overrides, {custom_n} custom) "
-        f"→ {output_path}"
+        f"({vendor_n} vendor, {override_n} overrides, {custom_n} custom"
+        + (f", {filtered_n} filtered out" if filtered_n else "")
+        + f") → {output_path}"
     )
     if removed_ids:
         print(f"Removed vendor rules ({len(removed_ids)}): {', '.join(removed_ids)}")
