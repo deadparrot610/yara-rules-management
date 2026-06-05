@@ -7,8 +7,10 @@ vendor rules → apply filter policy (apply_filters) → collision check →
 topological order → emit source → compile (validation gate) → write manifest.
 """
 
+import re
 import sys
 import json
+import bisect
 import heapq
 import hashlib
 import argparse
@@ -220,24 +222,45 @@ def topological_order(rules: list) -> list:
 # Emit
 # ---------------------------------------------------------------------------
 
-def build_source(rules: list, all_imports: set) -> str:
-    """Assemble the merged source as a string (does not touch disk)."""
+def build_source(rules: list, all_imports: set) -> tuple:
+    """Assemble the merged source as a string (does not touch disk).
+
+    Returns (source_str, rule_index) where rule_index is a list of
+    (start_lineno, RuleRecord) pairs used to attribute compile errors back to
+    the original source file and rule identifier.
+    """
     parts = []
+    lineno = 1
     for imp in sorted(all_imports):
         parts.append(f'import "{imp}"\n')
+        lineno += 1
     if all_imports:
         parts.append("\n")
+        lineno += 1
+    index: list = []
     for rule in rules:
-        parts.append(rule.raw_text.rstrip())
+        index.append((lineno, rule))
+        stripped = rule.raw_text.rstrip()
+        parts.append(stripped)
         parts.append("\n\n")
-    return "".join(parts)
+        lineno += stripped.count("\n") + 2  # content lines + \n\n separator
+    return "".join(parts), index
+
+
+def _locate_rule(index: list, lineno: int):
+    """Return the RuleRecord whose block contains lineno, or None."""
+    if not index:
+        return None
+    starts = [s for s, _ in index]
+    pos = bisect.bisect_right(starts, lineno) - 1
+    return index[pos][1] if pos >= 0 else None
 
 
 # ---------------------------------------------------------------------------
 # Compile
 # ---------------------------------------------------------------------------
 
-def compile_rules(source: str, externals: dict) -> None:
+def compile_rules(source: str, externals: dict, rule_index: list | None = None) -> None:
     """Compile via yara-python as the authoritative validation gate.
 
     Takes the merged source string directly so no unvalidated file is
@@ -248,7 +271,19 @@ def compile_rules(source: str, externals: dict) -> None:
     try:
         yara.compile(source=source, externals=coerced)
     except yara.SyntaxError as exc:
-        print(f"ERROR: YARA compilation failed: {exc}", file=sys.stderr)
+        msg = str(exc)
+        annotation = ""
+        if rule_index:
+            m = re.search(r"\bline (\d+)", msg)
+            if m:
+                record = _locate_rule(rule_index, int(m.group(1)))
+                if record:
+                    try:
+                        rel = record.filepath.relative_to(ROOT)
+                    except ValueError:
+                        rel = record.filepath
+                    annotation = f" (rule '{record.identifier}' in {rel})"
+        print(f"ERROR: YARA compilation failed{annotation}: {msg}", file=sys.stderr)
         sys.exit(1)
     except Exception as exc:
         print(f"ERROR: unexpected compilation error: {exc}", file=sys.stderr)
@@ -351,11 +386,11 @@ def main() -> None:
         all_imports.update(rule.imports)
 
     # --- Build source string ---
-    merged_source = build_source(ordered, all_imports)
+    merged_source, rule_index = build_source(ordered, all_imports)
 
     # --- Compile (authoritative validation gate) ---
     # Runs against the in-memory string so no unvalidated file is written first.
-    compile_rules(merged_source, config.get("external_variables", {}))
+    compile_rules(merged_source, config.get("external_variables", {}), rule_index)
 
     # --- Emit source (only after compilation passes) ---
     dist = root / "dist"
