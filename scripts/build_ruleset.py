@@ -9,6 +9,7 @@ topological order → emit source → compile (validation gate) → write manife
 
 import sys
 import json
+import heapq
 import hashlib
 import argparse
 from dataclasses import dataclass
@@ -174,7 +175,6 @@ def topological_order(rules: list) -> list:
     """
     known = {r.identifier for r in rules}
     rule_map = {r.identifier: r for r in rules}
-    input_order = {r.identifier: i for i, r in enumerate(rules)}
 
     deps = {
         r.identifier: {t for t in r.condition_terms if t in known and t != r.identifier}
@@ -188,25 +188,24 @@ def topological_order(rules: list) -> list:
             in_degree[rid] += 1
             dependents[dep].append(rid)
 
-    def sort_key(rid: str) -> tuple:
-        r = rule_map[rid]
-        return (GROUP_ORDER.get(r.origin, 99), input_order[rid])
+    # (group_order, input_position, identifier) — input_position is unique so
+    # string comparison is never reached; it only exists to keep heapq safe.
+    heap_key = {
+        r.identifier: (GROUP_ORDER.get(r.origin, 99), i, r.identifier)
+        for i, r in enumerate(rules)
+    }
 
-    available = sorted(
-        (r.identifier for r in rules if in_degree[r.identifier] == 0),
-        key=sort_key,
-    )
+    heap = [heap_key[r.identifier] for r in rules if in_degree[r.identifier] == 0]
+    heapq.heapify(heap)
 
     ordered = []
-    while available:
-        rid = available.pop(0)
+    while heap:
+        *_, rid = heapq.heappop(heap)
         ordered.append(rule_map[rid])
-        newly_free = []
         for dep in dependents[rid]:
             in_degree[dep] -= 1
             if in_degree[dep] == 0:
-                newly_free.append(dep)
-        available = sorted(available + newly_free, key=sort_key)
+                heapq.heappush(heap, heap_key[dep])
 
     if len(ordered) != len(rules):
         processed = {r.identifier for r in ordered}
