@@ -1,7 +1,7 @@
 overrides:
-  - override_rule: Custom_Override_Placeholder
+  - override_rule: vendor_override_overridden
     supersedes:
-      - Vendor_Placeholder
-    reason: "Placeholder override for Phase 1 testing"
+      - vendor_override
+    reason: "Phase 1 testing"
     author: fritz
     date: "2026-06-02"
