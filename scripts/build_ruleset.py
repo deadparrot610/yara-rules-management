@@ -7,6 +7,7 @@ vendor rules → apply filter policy (apply_filters) → collision check →
 topological order → emit source → compile (validation gate) → write manifest.
 """
 
+import os
 import re
 import sys
 import json
@@ -214,7 +215,9 @@ def write_manifest(
               for origin in ("vendor", "custom", "overrides")}
 
     manifest = {
-        "build_version": "1",
+        # Releases are versioned by the git tag ($CI_COMMIT_TAG); non-tag builds
+        # (branches, MRs, local) carry a dev sentinel so the field is always present.
+        "build_version": os.environ.get("CI_COMMIT_TAG") or "0.0.0-dev",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "tool_versions": {
             "plyara": getattr(plyara, "__version__", "unknown"),

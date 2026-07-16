@@ -2,7 +2,7 @@
 
 A version-controlled home and CI/CD pipeline for the organization's YARA detection rules. It manages vendor-supplied, in-house custom, and override rules; applies a declarative filter policy; and compiles everything into a single validated, deployable ruleset on every change.
 
-> **Project status: initial development.** The design is documented (see [Design documents](#design-documents)) and the repository is being built out in phases per [IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md). Commands and paths below describe the intended interface; not all scripts exist yet. This README is the contributor entry point and the build's north star.
+> The build, lint, filter, override, test, and packaging pipeline is implemented end to end; the commands and paths below work today. The PCAP-testing job (Phase 8) is deferred pending scoping ([IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md)). This README is the contributor entry point.
 
 ---
 
@@ -113,6 +113,28 @@ Runs on a pinned Docker image carrying YARA and the Python dependencies.
 | `package` | on tags | publish the versioned ruleset + manifest to the Package Registry |
 
 A broken rule, a stale override, a coverage-gap-inducing filter, or a false-positive match all fail the pipeline.
+
+### Cutting a release
+
+Releases are cut by pushing a git tag. Use a semantic version:
+
+```bash
+git tag v1.4.0
+git push origin v1.4.0
+```
+
+The tag runs the full pipeline (lint → build → test) and then, only on success, the `package` and `release` stages:
+
+- **`package`** uploads the built `merged_rules.yara` and `build_manifest.json` to the project's generic **Package Registry** under `yara-ruleset/<tag>/`. Download a specific version from *Deploy → Package Registry*, or via the API:
+
+  ```bash
+  curl --header "PRIVATE-TOKEN: <token>" \
+    "https://<gitlab-host>/api/v4/projects/<id>/packages/generic/yara-ruleset/v1.4.0/merged_rules.yara"
+  ```
+
+- **`release`** creates a **GitLab Release** for the tag (visible under *Deploy → Releases*) whose assets link both package files.
+
+The manifest ties the artifact to its exact inputs: `build_version` records the tag, and `source_hashes` records the SHA-256 of every source file that went into the build — so a downloaded ruleset can be verified against the rules it was built from.
 
 ## Design documents
 

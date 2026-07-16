@@ -9,6 +9,7 @@
 This is the build order. It is sequenced so the riskiest, most load-bearing components — the merge engine, then the filter engine that sits on top of it — are proven before anything depends on them. Each phase has a definition of done you can verify before moving on.
 
 **Changelog**
+- v1.1 — Reordered final phases: packaging & releases brought forward to Phase 7; PCAP testing deferred to Phase 8 pending scoping.
 - v1.0 — Approved; consistency review complete; phases 2 and 3 updated to reflect D-4 and D-10 resolutions.
 - v0.2 — Inserted Phase 3 (filter policy engine); renumbered later phases; updated sequencing notes.
 - v0.1 — Initial draft.
@@ -43,13 +44,13 @@ This is the build order. It is sequenced so the riskiest, most load-bearing comp
 **Build:** pinned Docker image (YARA + Python deps); `.gitlab-ci.yml` with lint, build, test stages; `dist/` passed build→test as artifacts; JUnit results surfaced in MRs.
 **Done when:** a pushed branch runs all three stages, a broken rule or bad filter policy fails the pipeline, and test results render in the merge request.
 
-## Phase 7 — PCAP testing job
-**Build:** `pcap-test` stage, `when: manual`; ingest per D-3 default (CI file variable); scan raw and/or carved files; write a match-report artifact.
-**Done when:** a maintainer triggers the job with a test capture and downloads a match report. _(Depends on D-3.)_
-
-## Phase 8 — Packaging & releases
-**Build:** `package` stage on tags publishing the versioned ruleset + manifest to the GitLab Package Registry; finalize `README.md` (author workflow, how to add an override, how to write a filter, how to update the vendor file, how to run the PCAP job).
+## Phase 7 — Packaging & releases
+**Build:** `package` stage on tags publishing the versioned ruleset + manifest to the GitLab Package Registry; finalize `README.md` (author workflow, how to add an override, how to write a filter, how to update the vendor file).
 **Done when:** a tag produces a downloadable, versioned release artifact tied to its input hashes via the manifest.
+
+## Phase 8 — PCAP testing job _(deferred — approach TBD)_
+**Build:** `pcap-test` stage, `when: manual`; ingest per D-3 default (CI file variable); scan raw and/or carved files; write a match-report artifact.
+**Done when:** a maintainer triggers the job with a test capture and downloads a match report. _(Deferred pending scoping; depends on D-3.)_
 
 ---
 

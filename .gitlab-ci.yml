@@ -1,18 +1,22 @@
-# CI/CD pipeline for the YARA ruleset (Phase 6: lint -> build -> test).
+# CI/CD pipeline for the YARA ruleset (lint -> build -> test -> package -> release).
 #
 # A kaniko job builds the pinned CI image (ci/Dockerfile) and pushes it to the
 # project Container Registry; the lint/build/test jobs run inside it. The built
 # dist/ artifacts flow build -> test so the test stage validates exactly what was
 # built and filtered. JUnit XML is surfaced in merge requests.
 #
-# pcap-test (Phase 7) and package (Phase 8) are intentionally not defined yet.
+# On a git tag, the package/release stages publish the versioned ruleset + manifest
+# to the generic Package Registry and create a GitLab Release linking them (Phase 7).
+# The pcap-test stage (Phase 8) is intentionally not defined yet.
 
-# Run a merge-request pipeline for every open MR, and a branch pipeline
-# otherwise. The middle rule suppresses the redundant branch pipeline while an
-# MR is open on that branch, so a single push never triggers two pipelines.
+# Run a merge-request pipeline for every open MR, a tag pipeline on every tag
+# (which drives package/release), and a branch pipeline otherwise. The third rule
+# suppresses the redundant branch pipeline while an MR is open on that branch, so a
+# single push never triggers two pipelines.
 workflow:
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_TAG
     - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
       when: never
     - if: $CI_COMMIT_BRANCH
@@ -22,6 +26,8 @@ stages:
   - lint
   - build
   - test
+  - package
+  - release
 
 variables:
   CI_IMAGE: "$CI_REGISTRY_IMAGE/ci:latest"
@@ -98,3 +104,57 @@ test:
     reports:
       junit: test-results/junit.xml
     expire_in: 1 week
+
+# ---------------------------------------------------------------------------
+# On a tag: publish the freshly built, tested dist/ artifacts to the project's
+# generic Package Registry under yara-ruleset/<tag>/. The python CI image is
+# -slim and ships no curl, so this job runs on a pinned curl image; it needs no
+# Python, only the dist/ artifacts carried forward from build. Gating on test as
+# well as build means a red test suite blocks the release.
+# ---------------------------------------------------------------------------
+package:
+  stage: package
+  image: curlimages/curl:8.11.1
+  needs: ["build", "test"]
+  rules:
+    - if: $CI_COMMIT_TAG
+  script:
+    - |
+      base="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/yara-ruleset/${CI_COMMIT_TAG}"
+      for f in merged_rules.yara build_manifest.json; do
+        echo "Uploading dist/${f} -> ${base}/${f}"
+        curl --fail --silent --show-error \
+          --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+          --upload-file "dist/${f}" "${base}/${f}"
+      done
+
+# ---------------------------------------------------------------------------
+# Create the GitLab Release for the tag, linking the two package files uploaded
+# above as release assets. build_manifest.json's source_hashes + build_version
+# tie the release to its exact inputs.
+#
+# Idempotent: a Release may already exist for the tag when it was created from
+# the GitLab UI / Releases API (which creates the tag + Release together, then
+# triggers this pipeline) or when a completed tag pipeline is retried. The
+# declarative `release:` keyword runs `release-cli create --no-update`, which
+# hard-fails in that case, so we probe with `release-cli get` first and skip
+# creation when the Release is already present, leaving it and its assets as is.
+# ---------------------------------------------------------------------------
+release:
+  stage: release
+  image: registry.gitlab.com/gitlab-org/release-cli:latest
+  needs: ["package"]
+  rules:
+    - if: $CI_COMMIT_TAG
+  script:
+    - |
+      if release-cli get --tag-name "$CI_COMMIT_TAG" >/dev/null 2>&1; then
+        echo "Release for ${CI_COMMIT_TAG} already exists; skipping creation."
+        exit 0
+      fi
+      echo "Creating GitLab Release for ${CI_COMMIT_TAG}"
+      release-cli create \
+        --tag-name "$CI_COMMIT_TAG" \
+        --description "YARA ruleset ${CI_COMMIT_TAG}. Artifacts published to the generic Package Registry; contents tied to inputs via build_manifest.json source_hashes and build_version." \
+        --assets-link "{\"name\":\"merged_rules.yara\",\"url\":\"${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/yara-ruleset/${CI_COMMIT_TAG}/merged_rules.yara\"}" \
+        --assets-link "{\"name\":\"build_manifest.json\",\"url\":\"${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/yara-ruleset/${CI_COMMIT_TAG}/build_manifest.json\"}"
