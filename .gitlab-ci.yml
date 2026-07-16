@@ -1,0 +1,83 @@
+# CI/CD pipeline for the YARA ruleset (Phase 6: lint -> build -> test).
+#
+# A kaniko job builds the pinned CI image (ci/Dockerfile) and pushes it to the
+# project Container Registry; the lint/build/test jobs run inside it. The built
+# dist/ artifacts flow build -> test so the test stage validates exactly what was
+# built and filtered. JUnit XML is surfaced in merge requests.
+#
+# pcap-test (Phase 7) and package (Phase 8) are intentionally not defined yet.
+
+stages:
+  - image
+  - lint
+  - build
+  - test
+
+variables:
+  CI_IMAGE: "$CI_REGISTRY_IMAGE/ci:$CI_COMMIT_SHORT_SHA"
+
+# ---------------------------------------------------------------------------
+# Build the pinned CI image and push it to the Container Registry.
+# Runs every pipeline so the image always exists for the SHA-tagged jobs below;
+# kaniko layer caching keeps rebuilds cheap when Dockerfile/requirements are
+# unchanged.
+# ---------------------------------------------------------------------------
+build-ci-image:
+  stage: image
+  image:
+    name: gcr.io/kaniko-project/executor:v1.23.2-debug
+    entrypoint: [""]
+  # kaniko does not auto-authenticate to the GitLab registry; write the docker
+  # config it reads so the --destination pushes below succeed (otherwise 401).
+  before_script:
+    - mkdir -p /kaniko/.docker
+    - |
+      echo "{\"auths\":{\"${CI_REGISTRY}\":{\"auth\":\"$(printf '%s:%s' \
+        "${CI_REGISTRY_USER}" "${CI_REGISTRY_PASSWORD}" | base64 | tr -d '\n')\"}}}" \
+        > /kaniko/.docker/config.json
+  script:
+    - >-
+      /kaniko/executor
+      --context "$CI_PROJECT_DIR"
+      --dockerfile "$CI_PROJECT_DIR/ci/Dockerfile"
+      --destination "$CI_REGISTRY_IMAGE/ci:$CI_COMMIT_SHORT_SHA"
+      --destination "$CI_REGISTRY_IMAGE/ci:latest"
+      --cache=true
+      --cache-repo "$CI_REGISTRY_IMAGE/ci/cache"
+
+# Shared config for the Python stages: run inside the freshly built CI image.
+.python-job:
+  image: "$CI_IMAGE"
+
+lint:
+  extends: .python-job
+  stage: lint
+  needs: ["build-ci-image"]
+  script:
+    - python scripts/lint.py
+
+build:
+  extends: .python-job
+  stage: build
+  needs: ["lint"]
+  script:
+    - python scripts/build_ruleset.py
+  artifacts:
+    name: "ruleset-$CI_COMMIT_SHORT_SHA"
+    paths:
+      - dist/
+    expire_in: 1 week
+
+test:
+  extends: .python-job
+  stage: test
+  needs: ["build"]
+  script:
+    - pytest tests/
+  artifacts:
+    when: always
+    paths:
+      - test-results/
+    reports:
+      junit: test-results/junit.xml
+    expire_in: 1 week
