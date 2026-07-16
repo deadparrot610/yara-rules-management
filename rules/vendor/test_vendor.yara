@@ -12,6 +12,10 @@
 rule feature_text_strings {
 	meta:
 		description = "Plain ASCII string matching"
+		author      = "yara-test-suite"
+		date        = "2026-05-03"
+		reference   = "https://yara.readthedocs.io"
+		severity    = "info"
 		feature     = "text strings"
 		expect      = "sample_text.txt"
 	strings:
@@ -29,6 +33,10 @@ rule feature_text_strings {
 rule feature_nocase {
 	meta:
 		description = "Case-insensitive string match"
+		author      = "yara-test-suite"
+		date        = "2026-06-21"
+		reference   = "https://yara.readthedocs.io"
+		severity    = "low"
 		feature     = "nocase modifier"
 		expect      = "sample_text.txt"
 	strings:
@@ -40,6 +48,10 @@ rule feature_nocase {
 rule feature_wide_string {
 	meta:
 		description = "UTF-16LE wide string detection"
+		author      = "yara-test-suite"
+		date        = "2026-04-18"
+		reference   = "https://yara.readthedocs.io"
+		severity    = "medium"
 		feature     = "wide modifier"
 		expect      = "sample_wide.bin"
 	strings:
@@ -56,6 +68,10 @@ rule feature_wide_string {
 rule feature_hex_exact {
 	meta:
 		description = "Exact hex byte sequence"
+		author      = "yara-test-suite"
+		date        = "2026-07-02"
+		reference   = "https://yara.readthedocs.io"
+		severity    = "high"
 		feature     = "hex strings"
 		expect      = "sample_binary.bin"
 	strings:
@@ -67,6 +83,10 @@ rule feature_hex_exact {
 rule feature_hex_wildcard {
 	meta:
 		description = "Hex pattern with single-byte wildcard"
+		author      = "yara-test-suite"
+		date        = "2026-05-29"
+		reference   = "https://yara.readthedocs.io"
+		severity    = "critical"
 		feature     = "hex wildcard ?"
 		expect      = "sample_binary.bin"
 	strings:
@@ -79,6 +99,10 @@ rule feature_hex_wildcard {
 rule feature_hex_jump {
 	meta:
 		description = "Hex pattern with variable-length jump"
+		author      = "yara-test-suite"
+		date        = "2026-06-11"
+		reference   = "https://yara.readthedocs.io"
+		severity    = "info"
 		feature     = "hex jump [n-m]"
 		expect      = "sample_binary.bin"
 	strings:
@@ -96,6 +120,10 @@ rule feature_hex_jump {
 rule feature_regex {
 	meta:
 		description = "Regular expression matching"
+		author      = "yara-test-suite"
+		date        = "2026-04-27"
+		reference   = "https://yara.readthedocs.io"
+		severity    = "low"
 		feature     = "regex strings"
 		expect      = "sample_text.txt"
 	strings:
@@ -113,6 +141,10 @@ rule feature_regex {
 rule feature_string_count {
 	meta:
 		description = "Match only if a string appears 3+ times"
+		author      = "yara-test-suite"
+		date        = "2026-07-09"
+		reference   = "https://yara.readthedocs.io"
+		severity    = "medium"
 		feature     = "string count (#)"
 		expect      = "sample_text.txt"
 	strings:
@@ -124,6 +156,10 @@ rule feature_string_count {
 rule feature_string_offset {
 	meta:
 		description = "Match based on where a string sits in the file"
+		author      = "yara-test-suite"
+		date        = "2026-05-14"
+		reference   = "https://yara.readthedocs.io"
+		severity    = "high"
 		feature     = "string offset (@)"
 		expect      = "sample_text.txt"
 	strings:
@@ -141,6 +177,10 @@ rule feature_string_offset {
 rule feature_filesize {
 	meta:
 		description = "Restrict match to small files"
+		author      = "yara-test-suite"
+		date        = "2026-06-06"
+		reference   = "https://yara.readthedocs.io"
+		severity    = "critical"
 		feature     = "filesize"
 		expect      = "sample_binary.bin"
 	condition:
@@ -155,6 +195,10 @@ rule feature_filesize {
 rule feature_boolean_logic {
 	meta:
 		description = "Compound boolean: must have X and not Y"
+		author      = "yara-test-suite"
+		date        = "2026-04-22"
+		reference   = "https://yara.readthedocs.io"
+		severity    = "info"
 		feature     = "boolean logic (and/or/not)"
 		expect      = "sample_text.txt"
 	strings:
@@ -172,6 +216,10 @@ rule feature_boolean_logic {
 rule feature_of_operator {
 	meta:
 		description = "At least 2 of 3 strings must be present"
+		author      = "yara-test-suite"
+		date        = "2026-07-13"
+		reference   = "https://yara.readthedocs.io"
+		severity    = "low"
 		feature     = "N of (set)"
 		expect      = "sample_text.txt"
 	strings:
@@ -190,6 +238,10 @@ rule feature_of_operator {
 rule feature_set_wildcard {
 	meta:
 		description = "Match any string whose variable name starts with $cmd_"
+		author      = "yara-test-suite"
+		date        = "2026-05-19"
+		reference   = "https://yara.readthedocs.io"
+		severity    = "medium"
 		feature     = "wildcard variable groups"
 		expect      = "sample_text.txt"
 	strings:
@@ -211,6 +263,10 @@ rule feature_set_wildcard {
 rule feature_entrypoint_stub {
 	meta:
 		description = "File starts with MZ magic (PE stub) at byte 0"
+		author      = "yara-test-suite"
+		date        = "2026-06-28"
+		reference   = "https://yara.readthedocs.io"
+		severity    = "high"
 		feature     = "at 0 / byte-offset anchoring"
 		expect      = "sample_binary.bin"
 	strings:
@@ -227,6 +283,10 @@ rule feature_entrypoint_stub {
 rule feature_xor {
 	meta:
 		description = "Detect a string hidden by single-byte XOR"
+		author      = "yara-test-suite"
+		date        = "2026-04-30"
+		reference   = "https://yara.readthedocs.io"
+		severity    = "critical"
 		feature     = "xor modifier"
 		expect      = "sample_xor.bin"
 	strings:
@@ -246,6 +306,10 @@ rule feature_xor {
 global rule global_pre_filter {
 	meta:
 		description = "Global guard: skip files that lack the test-file marker"
+		author      = "yara-test-suite"
+		date        = "2026-07-05"
+		reference   = "https://yara.readthedocs.io"
+		severity    = "info"
 		feature     = "global rule"
 	strings:
 		$marker = "YARA_TESTFILE"
@@ -262,6 +326,10 @@ global rule global_pre_filter {
 private rule base_has_marker {
 	meta:
 		description = "Private: silently checks for the dependency base marker"
+		author      = "yara-test-suite"
+		date        = "2026-05-08"
+		reference   = "https://yara.readthedocs.io"
+		severity    = "low"
 		feature     = "private rule"
 	strings:
 		$dep = "DEP_BASE_MARKER"
@@ -278,6 +346,10 @@ private rule base_has_marker {
 rule feature_rule_dependency {
 	meta:
 		description = "Fires only when the private base rule also matched"
+		author      = "yara-test-suite"
+		date        = "2026-06-16"
+		reference   = "https://yara.readthedocs.io"
+		severity    = "medium"
 		feature     = "rule dependency"
 		expect      = "sample_text.txt"
 	strings:
@@ -294,6 +366,10 @@ rule feature_rule_dependency {
 rule feature_tags: malware dropper demo {
 	meta:
 		description = "Rule with tags for grouping / filtering (-t flag)"
+		author      = "yara-test-suite"
+		date        = "2026-04-24"
+		reference   = "https://yara.readthedocs.io"
+		severity    = "high"
 		feature     = "rule tags"
 		expect      = "sample_text.txt"
 	strings:
@@ -310,6 +386,8 @@ rule feature_tags: malware dropper demo {
 rule feature_meta {
 	meta:
 		description = "Demonstrates meta field types"
+		date        = "2026-07-11"
+		severity    = "critical"
 		feature     = "meta block"
 		author      = "yara-test-suite"
 		version     = 1
@@ -330,6 +408,10 @@ rule feature_meta {
 rule feature_chain_level_c {
 	meta:
 		description = "Chain level C — depends on B (and transitively A)"
+		author      = "yara-test-suite"
+		date        = "2026-05-25"
+		reference   = "https://yara.readthedocs.io"
+		severity    = "info"
 		feature     = "chained rule dependency (level C)"
 		expect      = "sample_text.txt"
 	strings:
@@ -341,6 +423,10 @@ rule feature_chain_level_c {
 private rule chain_level_a {
 	meta:
 		description = "Chain level A — private base"
+		author      = "yara-test-suite"
+		date        = "2026-06-02"
+		reference   = "https://yara.readthedocs.io"
+		severity    = "low"
 		feature     = "chained rule dependency (level A)"
 	strings:
 		$a = "CHAIN_A"
@@ -351,6 +437,10 @@ private rule chain_level_a {
 private rule chain_level_b {
 	meta:
 		description = "Chain level B — depends on A"
+		author      = "yara-test-suite"
+		date        = "2026-06-24"
+		reference   = "https://yara.readthedocs.io"
+		severity    = "medium"
 		feature     = "chained rule dependency (level B)"
 	strings:
 		$b = "CHAIN_B"
@@ -365,6 +455,10 @@ private rule chain_level_b {
 rule vendor_override {
 	meta:
 		description = "Vendor override"
+		author      = "yara-test-suite"
+		date        = "2026-04-16"
+		reference   = "https://yara.readthedocs.io"
+		severity    = "high"
 		feature     = "Vendor override"
 	strings:
 		$a = "override"
