@@ -166,9 +166,21 @@ filters:
     action: exclude
     reason: "FP storm"
     ticket: SEC-2002
+
+  - id: F-004
+    description: "Retire vendor rules authored before the Q2 refresh"
+    scope: vendor
+    action: exclude
+    match:
+      meta_date:
+        field: date              # a date-valued meta field (YYYY-MM-DD)
+        before: "2026-05-01"     # strictly earlier; between = add a lower bound too
+    reason: "Superseded by refreshed vendor feed"
 ```
 
-**Selector dimensions** (all present conditions must match): `name` (exact), `name_glob`, `name_regex`, `tags` (rule has all listed tags), `meta` (exact key/value), `meta_in` (meta value is in a list). The selector is omitted for a `rule:<Identifier>` scope, which already names its target.
+**Selector dimensions** (all present conditions must match): `name` (exact), `name_glob`, `name_regex`, `tags` (rule has all listed tags), `meta` (exact key/value), `meta_in` (meta value is in a list), and `meta_date` (a date-valued meta field within a range). The selector is omitted for a `rule:<Identifier>` scope, which already names its target.
+
+**`meta_date` range selector.** Compares a date-valued meta field (`field`, values in `YYYY-MM-DD`) against up to four bounds, all AND-ed: `before` (`<`) and `after` (`>`) are strict; `on_or_before` (`<=`) and `on_or_after` (`>=`) are inclusive. "Between two dates" = supply a lower and an upper bound together. A targeted rule that lacks the field is simply not selected; a rule whose field is present but not a valid `YYYY-MM-DD` date is a hard `PipelineError`. A malformed bound in the policy itself is a `ConfigError` at load.
 
 ### 4.2 Resolution algorithm
 For each YARA rule `R` in the post-merge corpus:

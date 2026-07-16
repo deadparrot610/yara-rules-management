@@ -75,6 +75,37 @@ def _selector_matches(filter_entry, rule, rule_tags=None) -> bool:
             if str(rule.meta.get(k)) not in vs:  # vs is a frozenset (FilterMatch.__post_init__)
                 return False
 
+    if match.meta_date is not None and not _meta_date_matches(match.meta_date, rule):
+        return False
+
+    return True
+
+
+def _meta_date_matches(spec, rule) -> bool:
+    """Evaluate a FilterDateRange against a rule.
+
+    A rule missing the field is simply not selected (returns False). A field
+    that is present but not a valid YYYY-MM-DD date is a hard error — a typo'd
+    rule date must not silently escape the filter.
+    """
+    raw = rule.meta.get(spec.field)
+    if raw is None:
+        return False
+    try:
+        value = config_schema.parse_iso_date(str(raw))
+    except ValueError:
+        raise PipelineError(
+            f"rule {rule.identifier!r}: meta field {spec.field!r} value {raw!r} "
+            f"is not a valid YYYY-MM-DD date"
+        )
+    if spec.after is not None and not value > spec.after:
+        return False
+    if spec.before is not None and not value < spec.before:
+        return False
+    if spec.on_or_after is not None and not value >= spec.on_or_after:
+        return False
+    if spec.on_or_before is not None and not value <= spec.on_or_before:
+        return False
     return True
 
 
