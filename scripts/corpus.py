@@ -33,6 +33,29 @@ class RuleRecord:
     filepath: Path
 
 
+@dataclass
+class Corpus:
+    """The parsed rule corpus plus the source paths it came from.
+
+    Bundles what every entrypoint needs after discovery+parse so build,
+    override-check, and filter scripts share one loader (see load_corpus).
+    """
+    vendor_rules: list
+    override_rules: list
+    custom_rules: list
+    vendor_paths: list
+    override_path: Path
+    custom_paths: list
+
+    @property
+    def all_rules(self) -> list:
+        return self.vendor_rules + self.override_rules + self.custom_rules
+
+    @property
+    def source_files(self) -> list:
+        return self.vendor_paths + [self.override_path] + self.custom_paths
+
+
 # ---------------------------------------------------------------------------
 # Source discovery
 # ---------------------------------------------------------------------------
@@ -64,6 +87,8 @@ def _extract_raw_by_line(source: str, parsed_rules: list) -> dict:
 def parse_yara_files(paths: list, origin: str) -> list:
     """Parse .yara files; return a list of RuleRecord."""
     records = []
+    # Re-sort defensively: callers normally pass sorted paths (discover_sources),
+    # but sorting here guarantees deterministic rule order regardless of caller.
     for path in sorted(Path(p) for p in paths):
         if not path.exists():
             continue
@@ -102,6 +127,28 @@ def parse_yara_files(paths: list, origin: str) -> list:
                 filepath=path,
             ))
     return records
+
+
+# ---------------------------------------------------------------------------
+# Corpus loading
+# ---------------------------------------------------------------------------
+
+def load_corpus(root: Path) -> Corpus:
+    """Discover and parse every rule source into a Corpus.
+
+    The shared load-and-parse preamble for the build, override-check, and filter
+    entrypoints — config/manifest/policy loading stays with each caller since it
+    differs between them.
+    """
+    vendor_paths, override_path, custom_paths = discover_sources(root)
+    return Corpus(
+        vendor_rules=parse_yara_files(vendor_paths, "vendor"),
+        override_rules=parse_yara_files([override_path], "overrides"),
+        custom_rules=parse_yara_files(custom_paths, "custom"),
+        vendor_paths=vendor_paths,
+        override_path=override_path,
+        custom_paths=custom_paths,
+    )
 
 
 # ---------------------------------------------------------------------------

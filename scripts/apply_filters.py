@@ -7,6 +7,7 @@ Importable:  apply_filters.run(rules, policy, root, manifest_entries, config)
              -> (included_rules, exclusion_record)
 """
 
+import argparse
 import fnmatch
 import re
 import sys
@@ -131,7 +132,7 @@ def _coverage_gap_check(
     exclusion_record: list,
     manifest_entries: list,
     root: Path,
-    config: dict,
+    config,  # config_schema.BuildConfig
 ) -> None:
     # After strip_superseded, every superseded vendor rule is absent from the corpus —
     # either stripped in this build or already gone from a prior vendor update. Any
@@ -300,7 +301,6 @@ def run(
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    import argparse
     parser = argparse.ArgumentParser(
         description="Preview filter policy effects without building."
     )
@@ -323,17 +323,15 @@ def main() -> None:
         manifest_entries = config_schema.load_override_manifest(root)
         policy = config_schema.load_filter_policy(root)
 
-        vendor_paths, override_path, custom_paths = corpus.discover_sources(root)
-        vendor_rules = corpus.parse_yara_files(vendor_paths, "vendor")
-        override_rules = corpus.parse_yara_files([override_path], "overrides")
-        custom_rules = corpus.parse_yara_files(custom_paths, "custom")
+        corpus_data = corpus.load_corpus(root)
 
         # Run override validation so preview faithfully reflects build behaviour,
         # including blocking on unresolved stale overrides before showing filter effects.
-        check_overrides.validate(vendor_rules, override_rules, manifest_entries, config, root)
+        check_overrides.validate(corpus_data.vendor_rules, corpus_data.override_rules,
+                                 manifest_entries, config, root)
 
-        vendor_remainder, _ = corpus.strip_superseded(vendor_rules, manifest_entries)
-        post_strip = vendor_remainder + override_rules + custom_rules
+        vendor_remainder, _ = corpus.strip_superseded(corpus_data.vendor_rules, manifest_entries)
+        post_strip = vendor_remainder + corpus_data.override_rules + corpus_data.custom_rules
 
         included, exclusion_record = run(post_strip, policy, root, manifest_entries, config)
     except (ConfigError, PipelineError) as exc:

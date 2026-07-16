@@ -7,6 +7,7 @@ Importable:   check_overrides.validate(vendor_rules, override_rules,
                                         manifest_entries, config, root)
 """
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -140,7 +141,6 @@ def validate(
 
 
 def main() -> None:
-    import argparse
     argparse.ArgumentParser(
         description="Validate the override manifest and check for stale overrides."
     ).parse_args()
@@ -152,11 +152,10 @@ def main() -> None:
         config = config_schema.load_build_config(root)
         manifest_entries = config_schema.load_override_manifest(root)
 
-        vendor_paths, override_path, _ = corpus.discover_sources(root)
-        vendor_rules = corpus.parse_yara_files(vendor_paths, "vendor")
-        override_rules = corpus.parse_yara_files([override_path], "overrides")
+        corpus_data = corpus.load_corpus(root)
 
-        validate(vendor_rules, override_rules, manifest_entries, config, root)
+        validate(corpus_data.vendor_rules, corpus_data.override_rules,
+                 manifest_entries, config, root)
     except (ConfigError, PipelineError) as exc:
         logger.error("Override check failed: {}", exc)
         sys.exit(1)

@@ -25,7 +25,7 @@ import config_schema
 import check_overrides
 import apply_filters
 from config_schema import ConfigError
-from corpus import PipelineError, parse_yara_files, strip_superseded, discover_sources
+from corpus import PipelineError, strip_superseded, load_corpus
 from logging_setup import setup_logging
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -172,6 +172,8 @@ def compile_rules(source: str, externals: dict, rule_index: list | None = None) 
     written to disk before this gate passes.  Non-negotiable even when
     only source output is requested.
     """
+    # config_schema already forces every external to a string; this None-guard only
+    # matters if compile_rules is called directly with a hand-built externals dict.
     coerced = {k: (v if v is not None else "") for k, v in externals.items()}
     try:
         yara.compile(source=source, externals=coerced)
@@ -253,27 +255,27 @@ def _build(root: Path) -> tuple:
     filter_policy = load_filter_policy(root)
 
     # --- Parse ---
-    vendor_paths, override_path, custom_paths = discover_sources(root)
-
-    vendor_rules = parse_yara_files(vendor_paths, "vendor")
-    override_rules = parse_yara_files([override_path], "overrides")
-    custom_rules = parse_yara_files(custom_paths, "custom")
+    corpus_data = load_corpus(root)
     logger.info(
         "Parsed {} rules ({} vendor, {} overrides, {} custom)",
-        len(vendor_rules) + len(override_rules) + len(custom_rules),
-        len(vendor_rules), len(override_rules), len(custom_rules),
+        len(corpus_data.all_rules),
+        len(corpus_data.vendor_rules), len(corpus_data.override_rules),
+        len(corpus_data.custom_rules),
     )
 
     # --- Phase 2: stale-override validation ---
     logger.debug("Validating override manifest")
-    check_overrides.validate(vendor_rules, override_rules, manifest_entries, config, root)
+    check_overrides.validate(
+        corpus_data.vendor_rules, corpus_data.override_rules,
+        manifest_entries, config, root,
+    )
 
     # --- Strip superseded vendor rules ---
-    vendor_remainder, removed_ids = strip_superseded(vendor_rules, manifest_entries)
+    vendor_remainder, removed_ids = strip_superseded(corpus_data.vendor_rules, manifest_entries)
 
     # --- Phase 3: filter policy ---
     included_rules, exclusion_record = apply_filters.run(
-        vendor_remainder + override_rules + custom_rules,
+        vendor_remainder + corpus_data.override_rules + corpus_data.custom_rules,
         filter_policy,
         root,
         manifest_entries,
@@ -307,8 +309,8 @@ def _build(root: Path) -> tuple:
     output_path.write_text(merged_source)
 
     # --- Write manifest ---
-    all_source_files = vendor_paths + [override_path] + custom_paths
-    write_manifest(ordered, removed_ids, exclusion_record, all_source_files, dist / "build_manifest.json")
+    write_manifest(ordered, removed_ids, exclusion_record,
+                   corpus_data.source_files, dist / "build_manifest.json")
 
     return ordered, removed_ids, exclusion_record, output_path
 
