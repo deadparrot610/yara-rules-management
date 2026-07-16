@@ -11,7 +11,7 @@ This document describes how the system in the PRD is built. It assumes the reade
 **Changelog**
 - v1.0 — Approved; consistency review complete; all decisions resolved except D-3 and D-6.
 - v0.4 — Resolved D-10: coverage-gap policy is now a manual checkpoint with a persistent decisions file (`filters/coverage_gap_decisions.yaml`); updated §2, §4.3, added §4.5, updated §5 and §7.
-- v0.3 — Resolved D-4: stale-override policy is now a manual checkpoint with a persistent decisions file (`rules/overrides/stale_override_decisions.yaml`); updated §2, §3.2, added §3.3, updated §5 and §7.
+- v0.3 — Resolved D-4: stale-override policy is now a manual checkpoint with a persistent decisions file (`overrides/stale_override_decisions.yaml`); updated §2, §3.2, added §3.3, updated §5 and §7.
 - v0.2 — Added §4 Filter policy model; updated §2 (filters/ tree), §5 build sequence (filter stage + cross-checks), §7 components (apply_filters.py), §10 CI, and the build manifest contents.
 - v0.1 — Initial draft.
 
@@ -51,9 +51,10 @@ yara-rules/
 │   │   ├── apt/
 │   │   └── tooling/
 │   └── overrides/
-│       ├── overrides.yara              # the replacement rules
-│       ├── override_manifest.yaml      # which vendor rules each override supersedes + why
-│       └── stale_override_decisions.yaml  # reviewer keep/discard decisions for stale overrides
+│       └── overrides.yara              # the replacement rules
+├── overrides/                         # override metadata (kept out of rules/)
+│   ├── override_manifest.yaml         # which vendor rules each override supersedes + why
+│   └── stale_override_decisions.yaml  # reviewer keep/discard decisions for stale overrides
 ├── filters/
 │   ├── filter_policy.yaml              # declarative include/exclude selection layer
 │   └── coverage_gap_decisions.yaml     # reviewer keep/discard decisions for coverage gaps
@@ -104,7 +105,7 @@ A stale override (a `supersedes` entry that names a vendor rule no longer presen
 2. The reviewer decides for each stale entry:
    - **keep** — the override rule is still valuable (e.g. it catches variants not covered by the now-absent vendor rule); retain it in the corpus without a supersession claim for this identifier.
    - **discard** — the override rule is no longer needed now that the vendor rule is gone; remove it from the override manifest and `rules/overrides/overrides.yara`.
-3. The reviewer records the decision in `rules/overrides/stale_override_decisions.yaml` and commits it. On the next pipeline run the checkpoint reads this file, applies recorded decisions automatically, and only blocks for entries that still have no recorded decision.
+3. The reviewer records the decision in `overrides/stale_override_decisions.yaml` and commits it. On the next pipeline run the checkpoint reads this file, applies recorded decisions automatically, and only blocks for entries that still have no recorded decision.
 
 **Decisions file format:**
 
@@ -124,6 +125,7 @@ stale_override_decisions:
 - A `discard` decision signals that the override rule and its manifest entry should be removed; `check_overrides.py` reports this as a required cleanup action rather than applying it automatically (a human removes the rule and entry via MR).
 - The decisions file is committed to the repo and version-controlled, providing a full audit trail of every stale-override resolution.
 - When a vendor update re-introduces a previously absent identifier, the corresponding decision record becomes stale itself; `check_overrides.py` warns and the reviewer removes or supersedes the old decision.
+- The `decision` field is schema-validated at load (`config_schema.py`): it must be `keep` or `discard`. Any other value is a hard `ConfigError` that fails the pipeline immediately, rather than being treated as an unresolved (blocking) entry.
 
 ## 4. Filter policy model (rule selection layer)
 
@@ -213,13 +215,14 @@ coverage_gap_decisions:
 - A `discard` decision signals that the filter policy should be revised; `apply_filters.py` reports this as a required action rather than auto-modifying the policy.
 - The decisions file is committed to the repo and version-controlled, providing a full audit trail of every coverage-gap resolution.
 - If the filter policy changes and a previously recorded gap no longer exists (the override rule is now included), the corresponding decision record is inert but harmless; lint may warn that it is no longer referenced.
+- The `decision` field is schema-validated at load (`config_schema.py`): it must be `keep` or `discard`. Any other value is a hard `ConfigError` that fails the pipeline immediately, rather than being treated as an unresolved (blocking) gap.
 
 ## 5. Build logic (`scripts/build_ruleset.py`)
 
 Sequence:
 1. **Parse** the vendor file(s), `rules/overrides/`, and `rules/custom/` with `plyara`, producing per-rule structures keyed by identifier (with tags and meta retained for filtering).
-2. **Load** `rules/overrides/override_manifest.yaml`, `filters/filter_policy.yaml`, and `config/build.yaml`.
-3. **Validate overrides** via the manifest rules in §3.2–§3.3 (delegates to `check_overrides.py`). Block on any stale entry with no recorded decision in `rules/overrides/stale_override_decisions.yaml`; apply recorded decisions automatically.
+2. **Load** `overrides/override_manifest.yaml`, `filters/filter_policy.yaml`, and `config/build.yaml`.
+3. **Validate overrides** via the manifest rules in §3.2–§3.3 (delegates to `check_overrides.py`). Block on any stale entry with no recorded decision in `overrides/stale_override_decisions.yaml`; apply recorded decisions automatically.
 4. **Strip** every superseded identifier from the parsed vendor set (override merge).
 5. **Apply the filter policy** via `apply_filters.py` (§4.2), producing the included set and the exclusion record.
 6. **Run filter cross-checks** (§4.3): coverage-gap (reads `filters/coverage_gap_decisions.yaml`, blocks on unresolved gaps), referential integrity, empty/floor guards.
@@ -245,7 +248,7 @@ external_variables:
   filename: ""
   filepath: ""
   filetype: ""
-stale_override_decisions: rules/overrides/stale_override_decisions.yaml
+stale_override_decisions: overrides/stale_override_decisions.yaml
 coverage_gap_decisions: filters/coverage_gap_decisions.yaml
 filter_conflict_policy: exclude_wins   # exclude_wins | last_match_wins | error
 required_meta: [author, date, description, reference, severity]
@@ -255,11 +258,13 @@ required_meta: [author, date, description, reference, severity]
 
 **`scripts/lint.py`** compiles each `.yara` file individually (fast, source-attributed syntax failure), confirms `plyara` can parse it, validates that every rule carries the metadata named in `required_meta` plus naming conventions, and validates the **filter policy schema** (well-formed scopes/actions/selectors; warns when a `rule:` scope or exact `name` selector references an identifier not present in the corpus). Runs in the lint stage.
 
-**`scripts/check_overrides.py`** implements the manifest validation in §3.2–§3.3: detects stale and ambiguous override entries, reads `rules/overrides/stale_override_decisions.yaml` to apply recorded reviewer decisions, and blocks on any unresolved stale entry. Runnable standalone (useful immediately after a vendor file update, before merging).
+**`scripts/check_overrides.py`** implements the manifest validation in §3.2–§3.3: detects stale and ambiguous override entries, reads `overrides/stale_override_decisions.yaml` to apply recorded reviewer decisions, and blocks on any unresolved stale entry. Runnable standalone (useful immediately after a vendor file update, before merging).
 
 **`scripts/apply_filters.py`** implements the resolution algorithm and cross-checks in §4.2–§4.5: filter resolution, coverage-gap detection (reads `filters/coverage_gap_decisions.yaml`, blocks on unresolved gaps), referential integrity, and floor guard. Runnable standalone against a parsed corpus to preview what a policy change would include/exclude before committing.
 
 **`scripts/build_ruleset.py`** is the merge-and-filter engine described in §5.
+
+**`scripts/config_schema.py`** is the typed schema layer for every YAML config file (`build.yaml`, the override manifest, the filter policy, and both decisions files). Each file is parsed into a validated dataclass — checking required keys, types, enum values (`action`, `scope`, `default_mode`, `on_empty_output`, `filter_conflict_policy`, `decision`), and rejecting unknown fields — so malformed config fails fast with a sourced `ConfigError` instead of a downstream traceback. It is a dependency-free leaf module; all other scripts load config through its `load_*` functions, which consolidates what were previously duplicated per-script loaders.
 
 **`tests/test_ruleset.py`** loads the built ruleset, reads `tests/test_cases.yaml`, scans each fixture, asserts expected match/no-match, scans the `clean/` corpus to enforce the false-positive gate, and emits JUnit XML.
 

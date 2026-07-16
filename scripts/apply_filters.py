@@ -12,12 +12,8 @@ import re
 import sys
 from pathlib import Path
 
-import yaml
-
-from check_overrides import (
-    _lookup_decision as _lookup_gap_decision,
-    _load_decisions_file,
-)
+import config_schema
+from check_overrides import _lookup_decision as _lookup_gap_decision
 
 
 # ---------------------------------------------------------------------------
@@ -44,49 +40,34 @@ def _scope_applies(scope: str, rule) -> bool:
 # Selector matching
 # ---------------------------------------------------------------------------
 
-def _normalize_filters(filters: list) -> list:
-    """Pre-convert meta_in value lists to frozensets of strings for O(1) lookups."""
-    normalized = []
-    for f in filters:
-        match = f.get("match")
-        if match and "meta_in" in match:
-            f = dict(f)
-            f["match"] = {**match, "meta_in": {
-                k: frozenset(str(x) for x in vs)
-                for k, vs in match["meta_in"].items()
-            }}
-        normalized.append(f)
-    return normalized
-
-
-def _selector_matches(filter_entry: dict, rule, rule_tags=None) -> bool:
-    match = filter_entry.get("match")
-    if not match:
+def _selector_matches(filter_entry, rule, rule_tags=None) -> bool:
+    match = filter_entry.match
+    if match is None:
         return True
 
-    if "name" in match and rule.identifier != match["name"]:
+    if match.name is not None and rule.identifier != match.name:
         return False
 
-    if "name_glob" in match and not fnmatch.fnmatch(rule.identifier, match["name_glob"]):
+    if match.name_glob is not None and not fnmatch.fnmatch(rule.identifier, match.name_glob):
         return False
 
-    if "name_regex" in match and not re.search(match["name_regex"], rule.identifier):
+    if match.name_regex is not None and not re.search(match.name_regex, rule.identifier):
         return False
 
-    if "tags" in match:
+    if match.tags is not None:
         if rule_tags is None:
             rule_tags = frozenset(rule.tags)
-        if not all(t in rule_tags for t in match["tags"]):
+        if not all(t in rule_tags for t in match.tags):
             return False
 
-    if "meta" in match:
-        for k, v in match["meta"].items():
+    if match.meta is not None:
+        for k, v in match.meta.items():
             if str(rule.meta.get(k)) != str(v):
                 return False
 
-    if "meta_in" in match:
-        for k, vs in match["meta_in"].items():
-            if str(rule.meta.get(k)) not in vs:  # vs is a frozenset after normalization
+    if match.meta_in is not None:
+        for k, vs in match.meta_in.items():
+            if str(rule.meta.get(k)) not in vs:  # vs is a frozenset (FilterMatch.__post_init__)
                 return False
 
     return True
@@ -100,7 +81,7 @@ def _resolve_rule(rule, filters: list, default_mode: str, conflict_policy: str) 
     """Return (action, responsible_filter | None)."""
     applicable = [
         f for f in filters
-        if _scope_applies(f.get("scope", "global"), rule)
+        if _scope_applies(f.scope, rule)
         and _selector_matches(f, rule)
     ]
 
@@ -109,35 +90,28 @@ def _resolve_rule(rule, filters: list, default_mode: str, conflict_policy: str) 
 
     by_spec: dict = {}
     for f in applicable:
-        spec = _scope_specificity(f.get("scope", "global"))
+        spec = _scope_specificity(f.scope)
         by_spec.setdefault(spec, []).append(f)
 
     best_spec = min(by_spec)
     best = by_spec[best_spec]
 
-    actions = {f["action"] for f in best}
+    actions = {f.action for f in best}
     if len(actions) == 1:
         return next(iter(actions)), best[-1]
 
     # Conflict at the same specificity level — apply tie-break policy.
+    # action values are validated at load (include|exclude), so exclude_wins
+    # always finds an 'exclude' when actions disagree.
     if conflict_policy == "exclude_wins":
         for f in reversed(best):
-            if f["action"] == "exclude":
+            if f.action == "exclude":
                 return "exclude", f
-        # No "exclude" found — likely an unrecognised action value in the policy.
-        bad = {f["action"] for f in best} - {"include", "exclude"}
-        ids = [f.get("id", "<no-id>") for f in best]
-        print(
-            f"ERROR: exclude_wins found no 'exclude' action among filters {ids} "
-            f"for rule {rule.identifier!r}. "
-            f"Unrecognised action values: {bad}. Valid values are 'include' and 'exclude'.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+        return best[-1].action, best[-1]
     elif conflict_policy == "last_match_wins":
-        return best[-1]["action"], best[-1]
+        return best[-1].action, best[-1]
     else:  # "error"
-        ids = [f.get("id", "<no-id>") for f in best]
+        ids = [f.id or "<no-id>" for f in best]
         print(
             f"ERROR: conflicting same-specificity filters for rule {rule.identifier!r}: "
             f"{ids}. Resolve the conflict or set filter_conflict_policy to exclude_wins "
@@ -153,7 +127,9 @@ def _resolve_rule(rule, filters: list, default_mode: str, conflict_policy: str) 
 
 def _load_gap_decisions(decisions_path: Path) -> dict:
     """Load coverage_gap_decisions.yaml; returns {(override_rule, filter_id | None): decision}."""
-    return _load_decisions_file(decisions_path, "coverage_gap_decisions", "filter_id")
+    entries = config_schema.load_decisions(
+        decisions_path, "coverage_gap_decisions", "filter_id")
+    return {(e.override_rule, e.secondary): e.decision for e in entries}
 
 
 def _coverage_gap_check(
@@ -168,15 +144,13 @@ def _coverage_gap_check(
     # whether the vendor removal happened in this run or an earlier one.
     override_supersedes: dict = {}
     for entry in manifest_entries:
-        or_ = entry.get("override_rule")
-        sups = entry.get("supersedes") or []
-        if or_ and sups:
-            override_supersedes[or_] = set(sups)
+        if entry.supersedes:
+            override_supersedes[entry.override_rule] = set(entry.supersedes)
 
     if not override_supersedes:
         return
 
-    decisions_path = root / config["coverage_gap_decisions"]
+    decisions_path = root / config.coverage_gap_decisions
     decisions = _load_gap_decisions(decisions_path)
 
     blocking = []   # (override_rule, filter_id)
@@ -187,20 +161,12 @@ def _coverage_gap_check(
         if identifier not in override_supersedes:
             continue
         filter_id = rec.get("filter_id")
+        # decision is None, "keep", or "discard" — validated at load by config_schema.
         decision = _lookup_gap_decision(decisions, identifier, filter_id)
         if decision is None:
             blocking.append((identifier, filter_id))
-        elif decision == "keep":
-            pass
         elif decision == "discard":
             cleanup.append((identifier, filter_id))
-        else:
-            print(
-                f"WARNING: unrecognised decision {decision!r} for coverage gap "
-                f"{identifier!r}/{filter_id!r} — treating as no decision (blocked)",
-                file=sys.stderr,
-            )
-            blocking.append((identifier, filter_id))
 
     if cleanup:
         print("REQUIRED ACTION — coverage-gap 'discard' decisions pending manual revision:\n")
@@ -215,7 +181,7 @@ def _coverage_gap_check(
         print(
             "The following override rules are excluded by a filter, but the vendor rules\n"
             f"they superseded have already been removed. Record a decision in:\n"
-            f"  {config['coverage_gap_decisions']}\n",
+            f"  {config.coverage_gap_decisions}\n",
             file=sys.stderr,
         )
         for override_rule, filter_id in blocking:
@@ -258,16 +224,14 @@ def _referential_integrity_check(included_rules: list, excluded_ids: set) -> Non
 # Floor guard
 # ---------------------------------------------------------------------------
 
-def _floor_guard(included_count: int, policy: dict) -> None:
-    min_rules = policy.get("min_output_rules")
-    if min_rules is None:
-        min_rules = 1
+def _floor_guard(included_count: int, policy) -> None:
+    min_rules = policy.min_output_rules
     if included_count < min_rules:
         msg = (
             f"Filter policy produced {included_count} rules, "
             f"below min_output_rules={min_rules}."
         )
-        on_empty = policy.get("on_empty_output", "fail")
+        on_empty = policy.on_empty_output
         if on_empty == "warn":
             print(f"WARNING: {msg}")
         else:
@@ -281,19 +245,20 @@ def _floor_guard(included_count: int, policy: dict) -> None:
 
 def run(
     rules: list,
-    policy: dict,
+    policy,
     root: Path,
     manifest_entries: list,
-    config: dict,
+    config,
 ) -> tuple:
     """Apply the filter policy to the post-strip corpus.
 
+    policy is a config_schema.FilterPolicy; config is a config_schema.BuildConfig.
     Returns (included_rules, exclusion_record).
     exclusion_record: list of {identifier, filter_id, reason}.
     """
-    conflict_policy = config.get("filter_conflict_policy", "exclude_wins")
-    default_mode = policy.get("default_mode", "include_all")
-    filters = _normalize_filters(policy.get("filters") or [])
+    conflict_policy = config.filter_conflict_policy
+    default_mode = policy.default_mode
+    filters = policy.filters
 
     included = []
     exclusion_record = []
@@ -305,9 +270,9 @@ def run(
         else:
             exclusion_record.append({
                 "identifier": rule.identifier,
-                "filter_id": responsible.get("id") if responsible else None,
+                "filter_id": responsible.id if responsible else None,
                 "reason": (
-                    responsible.get("reason", "") if responsible
+                    (responsible.reason or "") if responsible
                     else f"default_mode: {default_mode}"
                 ),
             })
@@ -346,10 +311,15 @@ def main() -> None:
         load_manifest,
         load_filter_policy,
     )
+    from config_schema import ConfigError
 
-    config = load_config(root)
-    manifest_entries = load_manifest(root)
-    policy = load_filter_policy(root)
+    try:
+        config = load_config(root)
+        manifest_entries = load_manifest(root)
+        policy = load_filter_policy(root)
+    except ConfigError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     vendor_paths = sorted((root / "rules" / "vendor").glob("*.yara"))
     override_path = root / "rules" / "overrides" / "overrides.yara"
@@ -370,8 +340,8 @@ def main() -> None:
     included, exclusion_record = run(corpus, policy, root, manifest_entries, config)
 
     print(f"PREVIEW — filter policy: {root / 'filters' / 'filter_policy.yaml'}")
-    print(f"  default_mode : {policy.get('default_mode', 'include_all')}")
-    print(f"  active filters: {len(policy.get('filters') or [])}")
+    print(f"  default_mode : {policy.default_mode}")
+    print(f"  active filters: {len(policy.filters)}")
     print(f"  corpus (post-strip): {len(corpus)} rules")
     print(f"  included : {len(included)}")
     print(f"  excluded : {len(exclusion_record)}")

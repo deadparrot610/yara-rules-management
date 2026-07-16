@@ -18,9 +18,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-import yaml
 import plyara
 import yara
+
+import config_schema
+from config_schema import ConfigError
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -105,20 +107,19 @@ def parse_yara_files(paths: list, origin: str) -> list:
 # Config / manifest loading
 # ---------------------------------------------------------------------------
 
-def load_config(root: Path) -> dict:
-    with (root / "config" / "build.yaml").open() as f:
-        return yaml.safe_load(f)
+def load_config(root: Path):
+    """Return the validated BuildConfig (see config_schema)."""
+    return config_schema.load_build_config(root)
 
 
 def load_manifest(root: Path) -> list:
-    with (root / "rules" / "overrides" / "override_manifest.yaml").open() as f:
-        data = yaml.safe_load(f) or {}
-    return data.get("overrides", [])
+    """Return the validated override manifest as a list of OverrideEntry."""
+    return config_schema.load_override_manifest(root)
 
 
-def load_filter_policy(root: Path) -> dict:
-    with (root / "filters" / "filter_policy.yaml").open() as f:
-        return yaml.safe_load(f) or {}
+def load_filter_policy(root: Path):
+    """Return the validated FilterPolicy (see config_schema)."""
+    return config_schema.load_filter_policy(root)
 
 
 # ---------------------------------------------------------------------------
@@ -135,7 +136,7 @@ def strip_superseded(vendor_rules: list, manifest: list) -> tuple:
     """
     superseded = set()
     for entry in manifest:
-        for vid in entry.get("supersedes", []):
+        for vid in entry.supersedes:
             superseded.add(vid)
 
     vendor_ids = {r.identifier for r in vendor_rules}
@@ -343,9 +344,13 @@ def main() -> None:
     argparse.ArgumentParser(description="Build the merged YARA ruleset.").parse_args()
 
     root = ROOT
-    config = load_config(root)
-    manifest_entries = load_manifest(root)
-    load_filter_policy(root)   # validate YAML is well-formed; consumed in Phase 3
+    try:
+        config = load_config(root)
+        manifest_entries = load_manifest(root)
+        filter_policy = load_filter_policy(root)
+    except ConfigError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     # --- Parse ---
     vendor_paths = sorted((root / "rules" / "vendor").glob("*.yara"))
@@ -365,7 +370,6 @@ def main() -> None:
 
     # --- Phase 3: filter policy ---
     import apply_filters
-    filter_policy = load_filter_policy(root)
     included_rules, exclusion_record = apply_filters.run(
         vendor_remainder + override_rules + custom_rules,
         filter_policy,
@@ -390,7 +394,7 @@ def main() -> None:
 
     # --- Compile (authoritative validation gate) ---
     # Runs against the in-memory string so no unvalidated file is written first.
-    compile_rules(merged_source, config.get("external_variables", {}), rule_index)
+    compile_rules(merged_source, config.external_variables, rule_index)
 
     # --- Emit source (only after compilation passes) ---
     dist = root / "dist"
