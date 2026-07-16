@@ -76,3 +76,25 @@ def test_check_collisions_raises_on_duplicate():
     a2 = make_rule("Dup", origin="custom")
     with pytest.raises(PipelineError, match="duplicate identifier"):
         build_ruleset.check_collisions([a1, a2])
+
+
+# --- compile validation gate + error attribution ---------------------------
+
+def test_compile_rules_accepts_valid_source():
+    a = make_rule("Ok", origin="vendor",
+                  raw_text="rule Ok {\n\tcondition:\n\t\ttrue\n}")
+    source, index = build_ruleset.build_source([a], set())
+    build_ruleset.compile_rules(source, {}, index)  # no raise
+
+
+def test_compile_rules_attributes_error_to_rule_and_file():
+    # A rule whose condition references an undefined string fails to compile;
+    # the PipelineError should name the offending rule and its source file.
+    from pathlib import Path
+    bad = make_rule("Broken", origin="vendor",
+                    raw_text="rule Broken {\n\tcondition:\n\t\t$undefined\n}",
+                    filepath=Path("rules/vendor/bad.yara"))
+    source, index = build_ruleset.build_source([bad], set())
+    with pytest.raises(PipelineError, match="Broken") as exc:
+        build_ruleset.compile_rules(source, {}, index)
+    assert "compilation failed" in str(exc.value)

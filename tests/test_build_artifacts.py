@@ -43,6 +43,21 @@ def test_manifest_has_provenance(built):
     assert "yara-python" in manifest["tool_versions"]
 
 
+def test_referenced_rule_precedes_dependent_in_output(built):
+    # feature_rule_dependency's condition references the private rule
+    # base_has_marker; the ordering invariant requires the referenced rule to be
+    # emitted first. Same for the chain_level_b → feature_chain_level_c pair.
+    merged, _ = built
+    text = merged.read_text()
+    for dep, dependent in [
+        ("base_has_marker", "feature_rule_dependency"),
+        ("chain_level_b", "feature_chain_level_c"),
+    ]:
+        i_dep = text.index(f"rule {dep} ")
+        i_dependent = text.index(f"rule {dependent} ")
+        assert i_dep < i_dependent, f"{dep} must precede {dependent}"
+
+
 def test_build_is_deterministic(built):
     # Rebuild and compare byte-for-byte against the fixture's output (NFR-6).
     merged, _ = built

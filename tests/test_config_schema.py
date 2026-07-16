@@ -1,6 +1,7 @@
 """Tests for the typed config schema layer."""
 
 import pytest
+import yaml
 
 import config_schema
 from config_schema import (
@@ -153,3 +154,59 @@ def test_filter_policy_none_is_include_all():
     policy = FilterPolicy.from_dict(None, SRC)
     assert policy.default_mode == "include_all"
     assert policy.filters == []
+
+
+# --- decisions loaders -----------------------------------------------------
+
+def _write(path, key, entries):
+    path.write_text(yaml.safe_dump({key: entries}))
+
+
+def test_load_decisions_absent_file_returns_empty(tmp_path):
+    path = tmp_path / "missing.yaml"
+    assert config_schema.load_decisions(path, "stale_override_decisions", "missing_vendor_rule") == []
+    assert config_schema.load_decisions_map(path, "stale_override_decisions", "missing_vendor_rule") == {}
+
+
+def test_load_decisions_map_keys_on_override_and_secondary(tmp_path):
+    path = tmp_path / "d.yaml"
+    _write(path, "stale_override_decisions", [
+        {"override_rule": "ov", "missing_vendor_rule": "gone", "decision": "keep"},
+        {"override_rule": "ov2", "decision": "discard"},  # wildcard: no secondary
+    ])
+    m = config_schema.load_decisions_map(path, "stale_override_decisions", "missing_vendor_rule")
+    assert m[("ov", "gone")] == "keep"
+    assert m[("ov2", None)] == "discard"
+
+
+def test_lookup_decision_specific_beats_wildcard(tmp_path):
+    decisions = {("ov", "gone"): "keep", ("ov", None): "discard"}
+    # exact (ov, gone) wins over the wildcard (ov, None)
+    assert config_schema.lookup_decision(decisions, "ov", "gone") == "keep"
+
+
+def test_lookup_decision_falls_back_to_wildcard(tmp_path):
+    decisions = {("ov", None): "keep"}
+    assert config_schema.lookup_decision(decisions, "ov", "any_missing") == "keep"
+
+
+def test_lookup_decision_returns_none_when_unrecorded():
+    assert config_schema.lookup_decision({}, "ov", "gone") is None
+
+
+def test_load_decisions_normalizes_decision_case(tmp_path):
+    path = tmp_path / "d.yaml"
+    _write(path, "stale_override_decisions", [
+        {"override_rule": "ov", "missing_vendor_rule": "gone", "decision": "KEEP"},
+    ])
+    entries = config_schema.load_decisions(path, "stale_override_decisions", "missing_vendor_rule")
+    assert entries[0].decision == "keep"
+
+
+def test_load_decisions_bad_decision_value_errors(tmp_path):
+    path = tmp_path / "d.yaml"
+    _write(path, "stale_override_decisions", [
+        {"override_rule": "ov", "missing_vendor_rule": "gone", "decision": "maybe"},
+    ])
+    with pytest.raises(ConfigError, match="decision"):
+        config_schema.load_decisions(path, "stale_override_decisions", "missing_vendor_rule")
