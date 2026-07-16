@@ -7,6 +7,16 @@
 #
 # pcap-test (Phase 7) and package (Phase 8) are intentionally not defined yet.
 
+# Run a merge-request pipeline for every open MR, and a branch pipeline
+# otherwise. The middle rule suppresses the redundant branch pipeline while an
+# MR is open on that branch, so a single push never triggers two pipelines.
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - if: $CI_COMMIT_BRANCH
+
 stages:
   - image
   - lint
@@ -14,19 +24,23 @@ stages:
   - test
 
 variables:
-  CI_IMAGE: "$CI_REGISTRY_IMAGE/ci:$CI_COMMIT_SHORT_SHA"
+  CI_IMAGE: "$CI_REGISTRY_IMAGE/ci:latest"
 
 # ---------------------------------------------------------------------------
-# Build the pinned CI image and push it to the Container Registry.
-# Runs every pipeline so the image always exists for the SHA-tagged jobs below;
-# kaniko layer caching keeps rebuilds cheap when Dockerfile/requirements are
-# unchanged.
+# Build the pinned CI image and push it to the Container Registry as :latest.
+# Runs only when its inputs change (ci/Dockerfile or requirements.txt); other
+# pipelines reuse the last-built :latest. kaniko layer caching keeps the rebuild
+# cheap when only one of the two inputs changed.
 # ---------------------------------------------------------------------------
 build-ci-image:
   stage: image
   image:
     name: gcr.io/kaniko-project/executor:v1.23.2-debug
     entrypoint: [""]
+  rules:
+    - changes:
+        - ci/Dockerfile
+        - requirements.txt
   # kaniko does not auto-authenticate to the GitLab registry; write the docker
   # config it reads so the --destination pushes below succeed (otherwise 401).
   before_script:
@@ -40,19 +54,22 @@ build-ci-image:
       /kaniko/executor
       --context "$CI_PROJECT_DIR"
       --dockerfile "$CI_PROJECT_DIR/ci/Dockerfile"
-      --destination "$CI_REGISTRY_IMAGE/ci:$CI_COMMIT_SHORT_SHA"
       --destination "$CI_REGISTRY_IMAGE/ci:latest"
       --cache=true
       --cache-repo "$CI_REGISTRY_IMAGE/ci/cache"
 
-# Shared config for the Python stages: run inside the freshly built CI image.
+# Shared config for the Python stages: run inside the pinned CI image (:latest).
 .python-job:
   image: "$CI_IMAGE"
 
 lint:
   extends: .python-job
   stage: lint
-  needs: ["build-ci-image"]
+  # Optional: build-ci-image only runs when its inputs change, so wait for it
+  # when present but proceed against the existing :latest when it is skipped.
+  needs:
+    - job: build-ci-image
+      optional: true
   script:
     - python scripts/lint.py
 
