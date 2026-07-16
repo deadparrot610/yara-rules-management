@@ -2,3 +2,9 @@ dist/
 __pycache__/
 *.pyc
 .pytest_cache/
+test-results/
+# Generated scan fixtures (bytes defined in tests/fixtures.py)
+tests/samples/*.bin
+tests/samples/*.txt
+tests/clean/*.bin
+tests/clean/*.txt

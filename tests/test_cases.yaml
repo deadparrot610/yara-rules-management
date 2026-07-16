@@ -1,0 +1,21 @@
+# Declarative scan cases for the ruleset test harness (tests/test_ruleset.py).
+# Paths are relative to tests/. Each case scans a fixture against the built
+# dist/ ruleset and asserts:
+#   expect_match    - every listed rule identifier MUST be in the match set
+#   expect_no_match - none of the listed identifiers may be in the match set
+# The infrastructure global rule (global_pre_filter) and any rule not listed are
+# ignored, so a case only pins the behavior it means to prove.
+cases:
+  - fixture: samples/override_synthetic.bin
+    expect_match: [vendor_override_overridden]   # the override fires
+    expect_no_match: [vendor_override]           # proves the override removed the vendor rule
+  - fixture: samples/text_synthetic.bin
+    expect_match: [feature_text_strings, feature_nocase]
+  - fixture: samples/wide_synthetic.bin
+    expect_match: [feature_wide_string]
+  - fixture: samples/hex_synthetic.bin
+    expect_match: [feature_hex_exact, feature_hex_wildcard, feature_hex_jump, feature_entrypoint_stub]
+  - fixture: samples/deps_synthetic.bin
+    expect_match: [feature_rule_dependency, feature_chain_level_c]
+  - fixture: samples/tags_synthetic.bin
+    expect_match: [feature_tags]
