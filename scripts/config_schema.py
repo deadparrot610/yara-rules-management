@@ -22,7 +22,10 @@ _CONFLICT_POLICIES = {"exclude_wins", "last_match_wins", "error"}
 _DEFAULT_MODES = {"include_all", "exclude_all"}
 _ON_EMPTY = {"fail", "warn"}
 _ACTIONS = {"include", "exclude"}
-_RULESET_SCOPES = {"global", "vendor", "custom", "overrides"}
+# Rule origins usable as a filter scope; 'global' is a fourth scope keyword that
+# is not an origin. Public so consumers don't re-hardcode the literal sets.
+ORIGIN_SCOPES = frozenset({"vendor", "custom", "overrides"})
+_RULESET_SCOPES = {"global"} | ORIGIN_SCOPES
 _DECISIONS = {"keep", "discard"}
 _SCALAR = (str, int, float, bool)
 
@@ -420,3 +423,25 @@ def load_decisions(path: Path, list_key: str, secondary_field: str) -> list:
                           f"got {type(entries).__name__}")
     return [DecisionEntry.from_dict(e, str(path), i, secondary_field)
             for i, e in enumerate(entries)]
+
+
+def load_decisions_map(path: Path, list_key: str, secondary_field: str) -> dict:
+    """Load a decisions file into {(override_rule, secondary | None): decision}.
+
+    A None secondary acts as a wildcard covering all secondaries for that override
+    rule. Returns {} when the file does not exist. Thin dict view over load_decisions.
+    """
+    return {(e.override_rule, e.secondary): e.decision
+            for e in load_decisions(path, list_key, secondary_field)}
+
+
+def lookup_decision(decisions: dict, override_rule: str, secondary: str):
+    """Return the recorded decision for an (override_rule, secondary) pair.
+
+    Checks the specific (override_rule, secondary) key first, then falls back to
+    the wildcard (override_rule, None). Returns None if no decision is recorded.
+    """
+    specific = decisions.get((override_rule, secondary))
+    if specific is not None:
+        return specific
+    return decisions.get((override_rule, None))

@@ -13,7 +13,8 @@ import sys
 from pathlib import Path
 
 import config_schema
-from check_overrides import _lookup_decision as _lookup_gap_decision
+import corpus
+from corpus import PipelineError
 
 
 # ---------------------------------------------------------------------------
@@ -23,7 +24,7 @@ from check_overrides import _lookup_decision as _lookup_gap_decision
 def _scope_specificity(scope: str) -> int:
     if scope.startswith("rule:"):
         return 0
-    if scope in {"vendor", "custom", "overrides"}:
+    if scope in config_schema.ORIGIN_SCOPES:
         return 1
     return 2  # "global" or anything unrecognised
 
@@ -112,25 +113,16 @@ def _resolve_rule(rule, filters: list, default_mode: str, conflict_policy: str) 
         return best[-1].action, best[-1]
     else:  # "error"
         ids = [f.id or "<no-id>" for f in best]
-        print(
-            f"ERROR: conflicting same-specificity filters for rule {rule.identifier!r}: "
+        raise PipelineError(
+            f"conflicting same-specificity filters for rule {rule.identifier!r}: "
             f"{ids}. Resolve the conflict or set filter_conflict_policy to exclude_wins "
-            f"or last_match_wins.",
-            file=sys.stderr,
+            f"or last_match_wins."
         )
-        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
 # Coverage-gap checkpoint
 # ---------------------------------------------------------------------------
-
-def _load_gap_decisions(decisions_path: Path) -> dict:
-    """Load coverage_gap_decisions.yaml; returns {(override_rule, filter_id | None): decision}."""
-    entries = config_schema.load_decisions(
-        decisions_path, "coverage_gap_decisions", "filter_id")
-    return {(e.override_rule, e.secondary): e.decision for e in entries}
-
 
 def _coverage_gap_check(
     exclusion_record: list,
@@ -151,7 +143,8 @@ def _coverage_gap_check(
         return
 
     decisions_path = root / config.coverage_gap_decisions
-    decisions = _load_gap_decisions(decisions_path)
+    decisions = config_schema.load_decisions_map(
+        decisions_path, "coverage_gap_decisions", "filter_id")
 
     blocking = []   # (override_rule, filter_id)
     cleanup = []    # (override_rule, filter_id)
@@ -162,7 +155,7 @@ def _coverage_gap_check(
             continue
         filter_id = rec.get("filter_id")
         # decision is None, "keep", or "discard" — validated at load by config_schema.
-        decision = _lookup_gap_decision(decisions, identifier, filter_id)
+        decision = config_schema.lookup_decision(decisions, identifier, filter_id)
         if decision is None:
             blocking.append((identifier, filter_id))
         elif decision == "discard":
@@ -198,7 +191,10 @@ def _coverage_gap_check(
             print(f"          reviewer: <name>", file=sys.stderr)
             print(f"          date: <YYYY-MM-DD>", file=sys.stderr)
             print(file=sys.stderr)
-        sys.exit(1)
+        raise PipelineError(
+            f"coverage gap checkpoint: {len(blocking)} unresolved entr"
+            f"{'y' if len(blocking) == 1 else 'ies'}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -217,7 +213,10 @@ def _referential_integrity_check(included_rules: list, excluded_ids: set) -> Non
     if errors:
         for e in errors:
             print(f"ERROR: {e}", file=sys.stderr)
-        sys.exit(1)
+        raise PipelineError(
+            f"referential integrity: {len(errors)} included rule(s) reference "
+            f"excluded rules"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -235,8 +234,7 @@ def _floor_guard(included_count: int, policy) -> None:
         if on_empty == "warn":
             print(f"WARNING: {msg}")
         else:
-            print(f"ERROR: {msg}", file=sys.stderr)
-            sys.exit(1)
+            raise PipelineError(msg)
 
 
 # ---------------------------------------------------------------------------
@@ -302,47 +300,37 @@ def main() -> None:
 
     root = Path(__file__).resolve().parent.parent
 
-    # Lazy imports avoid circular dependency at module-init time and reuse
-    # the production parse, strip, and config-load logic rather than duplicating it.
-    from build_ruleset import (
-        parse_yara_files,
-        strip_superseded,
-        load_config,
-        load_manifest,
-        load_filter_policy,
-    )
+    # check_overrides is imported here (not at module level) because it is only
+    # needed for the standalone preview, not by the importable run() API.
+    import check_overrides
     from config_schema import ConfigError
 
     try:
-        config = load_config(root)
-        manifest_entries = load_manifest(root)
-        policy = load_filter_policy(root)
-    except ConfigError as exc:
+        config = config_schema.load_build_config(root)
+        manifest_entries = config_schema.load_override_manifest(root)
+        policy = config_schema.load_filter_policy(root)
+
+        vendor_paths, override_path, custom_paths = corpus.discover_sources(root)
+        vendor_rules = corpus.parse_yara_files(vendor_paths, "vendor")
+        override_rules = corpus.parse_yara_files([override_path], "overrides")
+        custom_rules = corpus.parse_yara_files(custom_paths, "custom")
+
+        # Run override validation so preview faithfully reflects build behaviour,
+        # including blocking on unresolved stale overrides before showing filter effects.
+        check_overrides.validate(vendor_rules, override_rules, manifest_entries, config, root)
+
+        vendor_remainder, _ = corpus.strip_superseded(vendor_rules, manifest_entries)
+        post_strip = vendor_remainder + override_rules + custom_rules
+
+        included, exclusion_record = run(post_strip, policy, root, manifest_entries, config)
+    except (ConfigError, PipelineError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(1)
-
-    vendor_paths = sorted((root / "rules" / "vendor").glob("*.yara"))
-    override_path = root / "rules" / "overrides" / "overrides.yara"
-    custom_paths = sorted((root / "rules" / "custom").rglob("*.yara"))
-
-    vendor_rules = parse_yara_files(vendor_paths, "vendor")
-    override_rules = parse_yara_files([override_path], "overrides")
-    custom_rules = parse_yara_files(custom_paths, "custom")
-
-    # Run override validation so preview faithfully reflects build behaviour,
-    # including blocking on unresolved stale overrides before showing filter effects.
-    import check_overrides
-    check_overrides.validate(vendor_rules, override_rules, manifest_entries, config, root)
-
-    vendor_remainder, _ = strip_superseded(vendor_rules, manifest_entries)
-    corpus = vendor_remainder + override_rules + custom_rules
-
-    included, exclusion_record = run(corpus, policy, root, manifest_entries, config)
 
     print(f"PREVIEW — filter policy: {root / 'filters' / 'filter_policy.yaml'}")
     print(f"  default_mode : {policy.default_mode}")
     print(f"  active filters: {len(policy.filters)}")
-    print(f"  corpus (post-strip): {len(corpus)} rules")
+    print(f"  corpus (post-strip): {len(post_strip)} rules")
     print(f"  included : {len(included)}")
     print(f"  excluded : {len(exclusion_record)}")
     if exclusion_record:

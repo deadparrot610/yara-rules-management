@@ -8,59 +8,12 @@ Importable:   check_overrides.validate(vendor_rules, override_rules,
 """
 
 import sys
-import collections
 from pathlib import Path
 
 import config_schema
+import corpus
 from config_schema import ConfigError
-
-_Rule = collections.namedtuple("_Rule", ["identifier"])
-
-
-def _parse_rules_standalone(paths: list) -> list:
-    """Minimal plyara parse — extracts rule identifiers only."""
-    import plyara as plyara_mod
-    records = []
-    for path in sorted(Path(p) for p in paths):
-        if not path.exists():
-            continue
-        parser = plyara_mod.Plyara()
-        try:
-            parsed = parser.parse_string(path.read_text())
-        except Exception as exc:
-            print(f"ERROR: failed to parse {path}: {exc}", file=sys.stderr)
-            sys.exit(1)
-        for rule in parsed:
-            records.append(_Rule(identifier=rule["rule_name"]))
-    return records
-
-
-def _decisions_lookup(decisions_path: Path, list_key: str, secondary_field: str) -> dict:
-    """Load a decisions file into {(override_rule, secondary | None): decision}.
-
-    A None secondary value acts as a wildcard covering all secondaries for that
-    override rule. Returns {} when the file does not exist. Delegates parsing and
-    validation to config_schema.load_decisions.
-    """
-    entries = config_schema.load_decisions(decisions_path, list_key, secondary_field)
-    return {(e.override_rule, e.secondary): e.decision for e in entries}
-
-
-def _load_decisions(decisions_path: Path) -> dict:
-    """Load stale_override_decisions.yaml; returns {(override_rule, missing_vendor_rule): decision}."""
-    return _decisions_lookup(decisions_path, "stale_override_decisions", "missing_vendor_rule")
-
-
-def _lookup_decision(decisions: dict, override_rule: str, vendor_id: str):
-    """Return the recorded decision for a stale (override_rule, vendor_id) pair.
-
-    Checks the specific (override_rule, vendor_id) key first, then falls back
-    to the wildcard (override_rule, None). Returns None if no decision is recorded.
-    """
-    specific = decisions.get((override_rule, vendor_id))
-    if specific is not None:
-        return specific
-    return decisions.get((override_rule, None))
+from corpus import PipelineError
 
 
 def validate(
@@ -73,7 +26,7 @@ def validate(
     """Validate the override manifest and enforce the stale-override checkpoint.
 
     Shape/type of manifest_entries is already guaranteed by config_schema; this
-    performs the corpus-dependent semantic checks. Exits with sys.exit(1) on
+    performs the corpus-dependent semantic checks. Raises PipelineError on
     semantic errors or unresolved stale entries. Prints required cleanup actions
     for 'discard' decisions (non-blocking).
     """
@@ -110,11 +63,14 @@ def validate(
     if errors:
         for e in errors:
             print(f"ERROR: {e}", file=sys.stderr)
-        sys.exit(1)
+        raise PipelineError(
+            f"override manifest failed validation ({len(errors)} error(s))"
+        )
 
     # --- Load decisions ---
     decisions_path = root / config.stale_override_decisions
-    decisions = _load_decisions(decisions_path)
+    decisions = config_schema.load_decisions_map(
+        decisions_path, "stale_override_decisions", "missing_vendor_rule")
 
     # --- Warn on stale decision records (vendor rule re-introduced) ---
     for (override_rule, missing_vid), _ in decisions.items():
@@ -138,7 +94,7 @@ def validate(
                 continue
             # decision is None (no record), "keep", or "discard" — the value set
             # is validated at load time by config_schema.
-            decision = _lookup_decision(decisions, override_rule, vid)
+            decision = config_schema.lookup_decision(decisions, override_rule, vid)
             if decision is None:
                 blocking.append((override_rule, vid))
             elif decision == "discard":
@@ -161,7 +117,10 @@ def validate(
             print(f"          reviewer: <name>", file=sys.stderr)
             print(f"          date: <YYYY-MM-DD>", file=sys.stderr)
             print(file=sys.stderr)
-        sys.exit(1)
+        raise PipelineError(
+            f"stale override checkpoint: {len(blocking)} unresolved entr"
+            f"{'y' if len(blocking) == 1 else 'ies'}"
+        )
 
     if cleanup:
         print("REQUIRED CLEANUP — 'discard' decisions pending manual action:\n")
@@ -188,17 +147,16 @@ def main() -> None:
     try:
         config = config_schema.load_build_config(root)
         manifest_entries = config_schema.load_override_manifest(root)
-    except ConfigError as exc:
+
+        vendor_paths, override_path, _ = corpus.discover_sources(root)
+        vendor_rules = corpus.parse_yara_files(vendor_paths, "vendor")
+        override_rules = corpus.parse_yara_files([override_path], "overrides")
+
+        validate(vendor_rules, override_rules, manifest_entries, config, root)
+    except (ConfigError, PipelineError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    vendor_paths = sorted((root / "rules" / "vendor").glob("*.yara"))
-    vendor_rules = _parse_rules_standalone(vendor_paths)
-
-    override_path = root / "rules" / "overrides" / "overrides.yara"
-    override_rules = _parse_rules_standalone([override_path])
-
-    validate(vendor_rules, override_rules, manifest_entries, config, root)
     print("Override manifest OK.")
 
 
