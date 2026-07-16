@@ -136,7 +136,7 @@ The filter policy decides **which rules from the post-merge corpus appear in the
 ```yaml
 # filters/filter_policy.yaml
 version: 1
-default_mode: include_all        # include_all (denylist) | include_none (allowlist)   [D-9]
+default_mode: include_all        # include_all (denylist) | exclude_all (allowlist)   [D-9]
 on_empty_output: fail            # fail | warn
 min_output_rules: 1              # below-floor guard
 filters:
@@ -184,7 +184,7 @@ filters:
 
 ### 4.2 Resolution algorithm
 For each YARA rule `R` in the post-merge corpus:
-1. `state = default_mode` (included if `include_all`, excluded if `include_none`).
+1. `state = default_mode` (included if `include_all`, excluded if `exclude_all`).
 2. Collect all filters whose scope applies to `R` and whose selector matches `R`.
 3. Decide by **scope specificity**: `rule:` (most specific) > ruleset (`vendor`/`custom`/`overrides`) > `global`. The highest-specificity level that has a matching filter determines `R`'s state via that filter's `action`. A more specific filter therefore overrides a less specific one.
 4. **Tie-break** at the same specificity, if both `include` and `exclude` match: apply the configured policy — **exclude-wins** (default), `last_match_wins`, or `error` (fail and require human resolution). [D-8]
