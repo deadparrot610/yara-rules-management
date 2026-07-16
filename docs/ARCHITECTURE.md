@@ -136,7 +136,7 @@ The filter policy decides **which rules from the post-merge corpus appear in the
 ```yaml
 # filters/filter_policy.yaml
 version: 1
-default_mode: include_all        # include_all (denylist) | include_none (allowlist)   [D-9]
+default_mode: include_all        # include_all (denylist) | exclude_all (allowlist)   [D-9]
 on_empty_output: fail            # fail | warn
 min_output_rules: 1              # below-floor guard
 filters:
@@ -166,13 +166,25 @@ filters:
     action: exclude
     reason: "FP storm"
     ticket: SEC-2002
+
+  - id: F-004
+    description: "Retire vendor rules authored before the Q2 refresh"
+    scope: vendor
+    action: exclude
+    match:
+      meta_date:
+        field: date              # a date-valued meta field (YYYY-MM-DD)
+        before: "2026-05-01"     # strictly earlier; between = add a lower bound too
+    reason: "Superseded by refreshed vendor feed"
 ```
 
-**Selector dimensions** (all present conditions must match): `name` (exact), `name_glob`, `name_regex`, `tags` (rule has all listed tags), `meta` (exact key/value), `meta_in` (meta value is in a list). The selector is omitted for a `rule:<Identifier>` scope, which already names its target.
+**Selector dimensions** (all present conditions must match): `name` (exact), `name_glob`, `name_regex`, `tags` (rule has all listed tags), `meta` (exact key/value), `meta_in` (meta value is in a list), and `meta_date` (a date-valued meta field within a range). The selector is omitted for a `rule:<Identifier>` scope, which already names its target.
+
+**`meta_date` range selector.** Compares a date-valued meta field (`field`, values in `YYYY-MM-DD`) against up to four bounds, all AND-ed: `before` (`<`) and `after` (`>`) are strict; `on_or_before` (`<=`) and `on_or_after` (`>=`) are inclusive. "Between two dates" = supply a lower and an upper bound together. A targeted rule that lacks the field is simply not selected; a rule whose field is present but not a valid `YYYY-MM-DD` date is a hard `PipelineError`. A malformed bound in the policy itself is a `ConfigError` at load.
 
 ### 4.2 Resolution algorithm
 For each YARA rule `R` in the post-merge corpus:
-1. `state = default_mode` (included if `include_all`, excluded if `include_none`).
+1. `state = default_mode` (included if `include_all`, excluded if `exclude_all`).
 2. Collect all filters whose scope applies to `R` and whose selector matches `R`.
 3. Decide by **scope specificity**: `rule:` (most specific) > ruleset (`vendor`/`custom`/`overrides`) > `global`. The highest-specificity level that has a matching filter determines `R`'s state via that filter's `action`. A more specific filter therefore overrides a less specific one.
 4. **Tie-break** at the same specificity, if both `include` and `exclude` match: apply the configured policy — **exclude-wins** (default), `last_match_wins`, or `error` (fail and require human resolution). [D-8]

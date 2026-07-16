@@ -1,11 +1,20 @@
 """Tests for the filter policy engine."""
 
+from datetime import date
+
 import pytest
 
 import yaml
 
 import apply_filters
-from config_schema import BuildConfig, FilterEntry, FilterMatch, FilterPolicy, OverrideEntry
+from config_schema import (
+    BuildConfig,
+    FilterDateRange,
+    FilterEntry,
+    FilterMatch,
+    FilterPolicy,
+    OverrideEntry,
+)
 from corpus import PipelineError
 from conftest import make_rule
 
@@ -153,6 +162,93 @@ def test_selector_meta_in_non_member_falls_through():
     filt = _filter("exclude", match=match)
     action, _ = apply_filters._resolve_rule(rule, [filt], "include_all", "exclude_wins")
     assert action == "include"
+
+
+# --- selector matching: meta_date range ------------------------------------
+
+def _date_filter(**bounds):
+    return _filter("exclude", match=FilterMatch(
+        meta_date=FilterDateRange(field="date", **bounds)))
+
+
+def _dated(identifier, value):
+    return make_rule(identifier, origin="vendor", meta={"date": value})
+
+
+def test_meta_date_before_strict_excludes_earlier():
+    rule = _dated("Foo", "2026-04-18")
+    action, _ = apply_filters._resolve_rule(
+        rule, [_date_filter(before=date(2026, 5, 1))], "include_all", "exclude_wins")
+    assert action == "exclude"
+
+
+def test_meta_date_before_strict_boundary_does_not_match():
+    # A rule exactly on the 'before' bound is NOT earlier, so it falls through.
+    rule = _dated("Foo", "2026-05-01")
+    action, _ = apply_filters._resolve_rule(
+        rule, [_date_filter(before=date(2026, 5, 1))], "include_all", "exclude_wins")
+    assert action == "include"
+
+
+def test_meta_date_after_strict_excludes_later():
+    rule = _dated("Foo", "2026-07-13")
+    action, _ = apply_filters._resolve_rule(
+        rule, [_date_filter(after=date(2026, 7, 1))], "include_all", "exclude_wins")
+    assert action == "exclude"
+
+
+def test_meta_date_on_or_before_is_inclusive():
+    rule = _dated("Foo", "2026-05-01")
+    action, _ = apply_filters._resolve_rule(
+        rule, [_date_filter(on_or_before=date(2026, 5, 1))], "include_all", "exclude_wins")
+    assert action == "exclude"
+
+
+def test_meta_date_on_or_after_is_inclusive():
+    rule = _dated("Foo", "2026-05-01")
+    action, _ = apply_filters._resolve_rule(
+        rule, [_date_filter(on_or_after=date(2026, 5, 1))], "include_all", "exclude_wins")
+    assert action == "exclude"
+
+
+def test_meta_date_between_selects_only_in_range():
+    filt = _date_filter(on_or_after=date(2026, 5, 1), before=date(2026, 7, 1))
+    in_range = _dated("In", "2026-06-06")
+    below = _dated("Below", "2026-04-18")
+    above = _dated("Above", "2026-07-13")
+    assert apply_filters._resolve_rule(in_range, [filt], "include_all", "exclude_wins")[0] == "exclude"
+    assert apply_filters._resolve_rule(below, [filt], "include_all", "exclude_wins")[0] == "include"
+    assert apply_filters._resolve_rule(above, [filt], "include_all", "exclude_wins")[0] == "include"
+
+
+def test_meta_date_missing_field_falls_through():
+    rule = make_rule("Foo", origin="vendor", meta={"author": "x"})  # no date
+    action, responsible = apply_filters._resolve_rule(
+        rule, [_date_filter(before=date(2026, 5, 1))], "include_all", "exclude_wins")
+    assert action == "include"
+    assert responsible is None
+
+
+def test_meta_date_unparseable_value_raises():
+    rule = _dated("Foo", "not-a-date")
+    with pytest.raises(PipelineError, match="not a valid YYYY-MM-DD date"):
+        apply_filters._resolve_rule(
+            rule, [_date_filter(before=date(2026, 5, 1))], "include_all", "exclude_wins")
+
+
+def test_run_meta_date_exclusion_drops_in_range_rules(tmp_path):
+    rules = [_dated("Old", "2026-04-16"), _dated("New", "2026-07-13")]
+    policy = FilterPolicy(
+        default_mode="include_all",
+        min_output_rules=0,
+        filters=[_filter("exclude", scope="vendor", fid="drop-old",
+                         match=FilterMatch(
+                             meta_date=FilterDateRange(field="date", before=date(2026, 5, 1))))],
+    )
+    included, exclusion_record = apply_filters.run(rules, policy, tmp_path, [], _config())
+    assert [r.identifier for r in included] == ["New"]
+    assert [r["identifier"] for r in exclusion_record] == ["Old"]
+    assert exclusion_record[0]["filter_id"] == "drop-old"
 
 
 # --- referential integrity -------------------------------------------------

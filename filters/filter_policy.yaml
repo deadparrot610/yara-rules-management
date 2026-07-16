@@ -3,3 +3,31 @@ default_mode: include_all
 on_empty_output: fail
 min_output_rules: 1
 filters: []
+
+# Example filters (uncomment and adapt). Selector keys AND together:
+#   name / name_glob / name_regex  — match on the rule identifier
+#   tags                           — rule carries all listed tags
+#   meta                           — exact key/value on a meta field
+#   meta_in                        — meta value is one of a list
+#   meta_date                      — a date-valued meta field within a range
+#
+# filters:
+#   - id: F-drop-old-vendor
+#     description: "Retire vendor rules authored before the Q2 refresh"
+#     scope: vendor
+#     action: exclude
+#     match:
+#       meta_date:
+#         field: date            # YYYY-MM-DD meta field to compare
+#         before: "2026-05-01"   # strict <  (after: strict > )
+#     reason: "Superseded by refreshed vendor feed"
+#
+#   - id: F-keep-window
+#     description: "Keep only rules dated within a window (between two dates)"
+#     scope: global
+#     action: include
+#     match:
+#       meta_date:
+#         field: date
+#         on_or_after: "2026-05-01"   # inclusive >=
+#         on_or_before: "2026-06-30"  # inclusive <=

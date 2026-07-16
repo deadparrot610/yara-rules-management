@@ -13,6 +13,7 @@ load config through the load_* functions here.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date, datetime
 from pathlib import Path
 
 import yaml
@@ -103,6 +104,19 @@ def _no_unknown_keys(data: dict, allowed: set, source: str, context: str):
             f"{source}: unknown field(s) {sorted(extra)} in {context}; "
             f"allowed: {sorted(allowed)}"
         )
+
+
+# Canonical date format for meta_date bounds and rule `date` meta values.
+DATE_FORMAT = "%Y-%m-%d"
+
+
+def parse_iso_date(value) -> date:
+    """Parse a YYYY-MM-DD string into a date. Raises ValueError on any other
+    shape — callers decide whether that's a ConfigError (bad policy) or a
+    PipelineError (bad rule)."""
+    if not isinstance(value, str):
+        raise ValueError(f"expected a YYYY-MM-DD string, got {type(value).__name__}")
+    return datetime.strptime(value, DATE_FORMAT).date()
 
 
 # ---------------------------------------------------------------------------
@@ -200,6 +214,53 @@ class OverrideEntry:
 # ---------------------------------------------------------------------------
 
 @dataclass
+class FilterDateRange:
+    """A range selector over a date-valued meta field.
+
+    Matches a rule when its `field` meta value (a YYYY-MM-DD date) satisfies
+    every supplied bound. `before`/`after` are strict (< / >); `on_or_before`/
+    `on_or_after` are inclusive (<= / >=). Supplying a lower and an upper bound
+    together expresses a "between" range. At least one bound is required.
+    """
+    field: str
+    before: date | None = None
+    after: date | None = None
+    on_or_before: date | None = None
+    on_or_after: date | None = None
+
+    _BOUNDS = ("before", "after", "on_or_before", "on_or_after")
+    _ALLOWED = {"field", *_BOUNDS}
+
+    @classmethod
+    def from_dict(cls, data, source: str, ctx: str) -> "FilterDateRange":
+        ctx = f"{ctx}.meta_date"
+        if not isinstance(data, dict):
+            raise ConfigError(f"{source}: {ctx} must be a mapping, "
+                              f"got {type(data).__name__}")
+        _no_unknown_keys(data, cls._ALLOWED, source, ctx)
+
+        field_name = _require(data, "field", str, f"{source} ({ctx})")
+
+        bounds = {}
+        for key in cls._BOUNDS:
+            raw = data.get(key)
+            if raw is None:
+                continue
+            try:
+                bounds[key] = parse_iso_date(raw)
+            except ValueError:
+                raise ConfigError(
+                    f"{source}: {ctx}.{key} must be a YYYY-MM-DD date, got {raw!r}"
+                )
+        if not bounds:
+            raise ConfigError(
+                f"{source}: {ctx} needs at least one of {list(cls._BOUNDS)}"
+            )
+
+        return cls(field=field_name, **bounds)
+
+
+@dataclass
 class FilterMatch:
     name: str | None = None
     name_glob: str | None = None
@@ -207,8 +268,10 @@ class FilterMatch:
     tags: list | None = None
     meta: dict | None = None
     meta_in: dict | None = None  # values normalized to frozenset[str] in __post_init__
+    meta_date: FilterDateRange | None = None
 
-    _ALLOWED = {"name", "name_glob", "name_regex", "tags", "meta", "meta_in"}
+    _ALLOWED = {"name", "name_glob", "name_regex", "tags", "meta", "meta_in",
+                "meta_date"}
 
     @classmethod
     def from_dict(cls, data, source: str, ctx: str) -> "FilterMatch":
@@ -237,6 +300,10 @@ class FilterMatch:
             for k, vs in meta_in.items():
                 _check_type(vs, list, source, f"{ctx}.match.meta_in[{k!r}]")
 
+        meta_date = data.get("meta_date")
+        if meta_date is not None:
+            meta_date = FilterDateRange.from_dict(meta_date, source, f"{ctx}.match")
+
         return cls(
             name=_optional(data, "name", str, f"{source} ({ctx}.match)"),
             name_glob=_optional(data, "name_glob", str, f"{source} ({ctx}.match)"),
@@ -244,6 +311,7 @@ class FilterMatch:
             tags=tags,
             meta=meta,
             meta_in=meta_in,
+            meta_date=meta_date,
         )
 
     def __post_init__(self):

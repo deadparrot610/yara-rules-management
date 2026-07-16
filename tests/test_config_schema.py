@@ -11,6 +11,7 @@ from config_schema import (
     FilterPolicy,
     OverrideEntry,
 )
+from datetime import date
 
 SRC = "test-source"
 
@@ -146,6 +147,52 @@ def test_filter_match_meta_in_normalized_to_frozenset():
         SRC, 0,
     )
     assert entry.match.meta_in["severity"] == frozenset({"high", "5"})
+
+
+# --- meta_date range selector ----------------------------------------------
+
+def _meta_date_entry(meta_date):
+    return FilterEntry.from_dict(
+        {"action": "exclude", "match": {"meta_date": meta_date}}, SRC, 0)
+
+
+def test_filter_match_meta_date_parses_bounds():
+    entry = _meta_date_entry({
+        "field": "date",
+        "on_or_after": "2026-05-01",
+        "before": "2026-07-01",
+    })
+    md = entry.match.meta_date
+    assert md.field == "date"
+    assert md.on_or_after == date(2026, 5, 1)
+    assert md.before == date(2026, 7, 1)
+    assert md.after is None and md.on_or_before is None
+
+
+def test_filter_match_meta_date_single_bound():
+    md = _meta_date_entry({"field": "date", "after": "2026-01-01"}).match.meta_date
+    assert md.after == date(2026, 1, 1)
+
+
+def test_filter_match_meta_date_requires_a_bound():
+    with pytest.raises(ConfigError, match="at least one"):
+        _meta_date_entry({"field": "date"})
+
+
+def test_filter_match_meta_date_requires_field():
+    with pytest.raises(ConfigError, match="missing required field 'field'"):
+        _meta_date_entry({"before": "2026-05-01"})
+
+
+def test_filter_match_meta_date_unknown_key():
+    with pytest.raises(ConfigError, match="unknown field"):
+        _meta_date_entry({"field": "date", "betwen": "2026-05-01"})
+
+
+@pytest.mark.parametrize("bad", ["2026-13-40", "nope", "2026/05/01", "20260501"])
+def test_filter_match_meta_date_malformed_bound(bad):
+    with pytest.raises(ConfigError, match="must be a YYYY-MM-DD date"):
+        _meta_date_entry({"field": "date", "before": bad})
 
 
 # --- empty/absent filter policy is valid ----------------------------------
