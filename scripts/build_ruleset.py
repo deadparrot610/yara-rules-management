@@ -14,134 +14,42 @@ import bisect
 import heapq
 import hashlib
 import argparse
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-import yaml
 import plyara
 import yara
+from loguru import logger
+
+import config_schema
+import check_overrides
+import apply_filters
+from config_schema import ConfigError
+from corpus import PipelineError, strip_superseded, load_corpus
+from logging_setup import setup_logging
 
 ROOT = Path(__file__).resolve().parent.parent
 
 GROUP_ORDER = {"vendor": 0, "overrides": 1, "custom": 2}
 
 
-@dataclass
-class RuleRecord:
-    identifier: str
-    raw_text: str          # verbatim source extracted from the file
-    tags: list
-    meta: dict             # flattened {key: value}
-    condition_terms: list  # plyara tokens; used for dependency detection
-    imports: list          # module imports declared in the source file
-    origin: str            # 'vendor' | 'custom' | 'overrides'
-    filepath: Path
-
-
-# ---------------------------------------------------------------------------
-# Parsing
-# ---------------------------------------------------------------------------
-
-def _extract_raw_by_line(source: str, parsed_rules: list) -> dict:
-    """Return {rule_name: raw_text} using plyara's start_line/stop_line."""
-    lines = source.splitlines(keepends=True)
-    result = {}
-    for rule in parsed_rules:
-        name = rule["rule_name"]
-        start = rule["start_line"] - 1   # plyara is 1-indexed
-        stop = rule["stop_line"]          # stop_line is inclusive; slice is [start:stop]
-        result[name] = "".join(lines[start:stop])
-    return result
-
-
-def parse_yara_files(paths: list, origin: str) -> list:
-    """Parse .yara files; return a list of RuleRecord."""
-    records = []
-    for path in sorted(Path(p) for p in paths):
-        if not path.exists():
-            continue
-        source = path.read_text()
-        parser = plyara.Plyara()
-        try:
-            parsed = parser.parse_string(source)
-        except Exception as exc:
-            print(f"ERROR: failed to parse {path}: {exc}", file=sys.stderr)
-            sys.exit(1)
-
-        if not parsed:
-            continue
-
-        raw_by_name = _extract_raw_by_line(source, parsed)
-
-        for rule in parsed:
-            name = rule["rule_name"]
-            raw = raw_by_name.get(name)
-            if raw is None:
-                print(
-                    f"ERROR: could not locate raw text for rule {name!r} in {path}",
-                    file=sys.stderr,
-                )
-                sys.exit(1)
-
-            meta = {}
-            for entry in rule.get("metadata", []):
-                meta.update(entry)
-
-            records.append(RuleRecord(
-                identifier=name,
-                raw_text=raw,
-                tags=rule.get("tags", []),
-                meta=meta,
-                condition_terms=rule.get("condition_terms", []),
-                imports=rule.get("imports", []),
-                origin=origin,
-                filepath=path,
-            ))
-    return records
-
-
 # ---------------------------------------------------------------------------
 # Config / manifest loading
 # ---------------------------------------------------------------------------
 
-def load_config(root: Path) -> dict:
-    with (root / "config" / "build.yaml").open() as f:
-        return yaml.safe_load(f)
+def load_config(root: Path):
+    """Return the validated BuildConfig (see config_schema)."""
+    return config_schema.load_build_config(root)
 
 
 def load_manifest(root: Path) -> list:
-    with (root / "rules" / "overrides" / "override_manifest.yaml").open() as f:
-        data = yaml.safe_load(f) or {}
-    return data.get("overrides", [])
+    """Return the validated override manifest as a list of OverrideEntry."""
+    return config_schema.load_override_manifest(root)
 
 
-def load_filter_policy(root: Path) -> dict:
-    with (root / "filters" / "filter_policy.yaml").open() as f:
-        return yaml.safe_load(f) or {}
-
-
-# ---------------------------------------------------------------------------
-# Override strip
-# ---------------------------------------------------------------------------
-
-def strip_superseded(vendor_rules: list, manifest: list) -> tuple:
-    """Remove vendor rules declared as superseded in the manifest.
-
-    Returns (remaining_vendor_rules, sorted_list_of_removed_identifiers).
-    Identifiers listed in the manifest but absent from the vendor corpus are
-    silently noted here; Phase 2 (check_overrides.py) will block on them as
-    stale entries.
-    """
-    superseded = set()
-    for entry in manifest:
-        for vid in entry.get("supersedes", []):
-            superseded.add(vid)
-
-    vendor_ids = {r.identifier for r in vendor_rules}
-    remaining = [r for r in vendor_rules if r.identifier not in superseded]
-    removed = sorted(superseded & vendor_ids)
-    return remaining, removed
+def load_filter_policy(root: Path):
+    """Return the validated FilterPolicy (see config_schema)."""
+    return config_schema.load_filter_policy(root)
 
 
 # ---------------------------------------------------------------------------
@@ -154,12 +62,10 @@ def check_collisions(rules: list) -> None:
     for rule in rules:
         if rule.identifier in seen:
             prev = seen[rule.identifier]
-            print(
-                f"ERROR: duplicate identifier {rule.identifier!r} "
-                f"in {rule.filepath} and {prev.filepath}",
-                file=sys.stderr,
+            raise PipelineError(
+                f"duplicate identifier {rule.identifier!r} "
+                f"in {rule.filepath} and {prev.filepath}"
             )
-            sys.exit(1)
         seen[rule.identifier] = rule
 
 
@@ -212,8 +118,7 @@ def topological_order(rules: list) -> list:
     if len(ordered) != len(rules):
         processed = {r.identifier for r in ordered}
         cycle_ids = [r.identifier for r in rules if r.identifier not in processed]
-        print(f"ERROR: cycle detected among rules: {cycle_ids}", file=sys.stderr)
-        sys.exit(1)
+        raise PipelineError(f"cycle detected among rules: {cycle_ids}")
 
     return ordered
 
@@ -267,6 +172,8 @@ def compile_rules(source: str, externals: dict, rule_index: list | None = None) 
     written to disk before this gate passes.  Non-negotiable even when
     only source output is requested.
     """
+    # config_schema already forces every external to a string; this None-guard only
+    # matters if compile_rules is called directly with a hand-built externals dict.
     coerced = {k: (v if v is not None else "") for k, v in externals.items()}
     try:
         yara.compile(source=source, externals=coerced)
@@ -283,11 +190,9 @@ def compile_rules(source: str, externals: dict, rule_index: list | None = None) 
                     except ValueError:
                         rel = record.filepath
                     annotation = f" (rule '{record.identifier}' in {rel})"
-        print(f"ERROR: YARA compilation failed{annotation}: {msg}", file=sys.stderr)
-        sys.exit(1)
+        raise PipelineError(f"YARA compilation failed{annotation}: {msg}")
     except Exception as exc:
-        print(f"ERROR: unexpected compilation error: {exc}", file=sys.stderr)
-        sys.exit(1)
+        raise PipelineError(f"unexpected compilation error: {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -339,35 +244,38 @@ def write_manifest(
 # Main
 # ---------------------------------------------------------------------------
 
-def main() -> None:
-    argparse.ArgumentParser(description="Build the merged YARA ruleset.").parse_args()
+def _build(root: Path) -> tuple:
+    """Run the full pipeline. Returns (ordered, removed_ids, exclusion_record, output_path).
 
-    root = ROOT
+    Raises ConfigError / PipelineError on any failure; the CLI boundary (main) turns
+    those into an ERROR message and exit 1.
+    """
     config = load_config(root)
     manifest_entries = load_manifest(root)
-    load_filter_policy(root)   # validate YAML is well-formed; consumed in Phase 3
+    filter_policy = load_filter_policy(root)
 
     # --- Parse ---
-    vendor_paths = sorted((root / "rules" / "vendor").glob("*.yara"))
-    override_path = root / "rules" / "overrides" / "overrides.yara"
-    custom_paths = sorted((root / "rules" / "custom").rglob("*.yara"))
-
-    vendor_rules = parse_yara_files(vendor_paths, "vendor")
-    override_rules = parse_yara_files([override_path], "overrides")
-    custom_rules = parse_yara_files(custom_paths, "custom")
+    corpus_data = load_corpus(root)
+    logger.info(
+        "Parsed {} rules ({} vendor, {} overrides, {} custom)",
+        len(corpus_data.all_rules),
+        len(corpus_data.vendor_rules), len(corpus_data.override_rules),
+        len(corpus_data.custom_rules),
+    )
 
     # --- Phase 2: stale-override validation ---
-    import check_overrides
-    check_overrides.validate(vendor_rules, override_rules, manifest_entries, config, root)
+    logger.debug("Validating override manifest")
+    check_overrides.validate(
+        corpus_data.vendor_rules, corpus_data.override_rules,
+        manifest_entries, config, root,
+    )
 
     # --- Strip superseded vendor rules ---
-    vendor_remainder, removed_ids = strip_superseded(vendor_rules, manifest_entries)
+    vendor_remainder, removed_ids = strip_superseded(corpus_data.vendor_rules, manifest_entries)
 
     # --- Phase 3: filter policy ---
-    import apply_filters
-    filter_policy = load_filter_policy(root)
     included_rules, exclusion_record = apply_filters.run(
-        vendor_remainder + override_rules + custom_rules,
+        vendor_remainder + corpus_data.override_rules + corpus_data.custom_rules,
         filter_policy,
         root,
         manifest_entries,
@@ -390,7 +298,9 @@ def main() -> None:
 
     # --- Compile (authoritative validation gate) ---
     # Runs against the in-memory string so no unvalidated file is written first.
-    compile_rules(merged_source, config.get("external_variables", {}), rule_index)
+    logger.debug("Compiling {} rules (validation gate)", len(ordered))
+    compile_rules(merged_source, config.external_variables, rule_index)
+    logger.info("Compilation succeeded ({} rules)", len(ordered))
 
     # --- Emit source (only after compilation passes) ---
     dist = root / "dist"
@@ -399,21 +309,39 @@ def main() -> None:
     output_path.write_text(merged_source)
 
     # --- Write manifest ---
-    all_source_files = vendor_paths + [override_path] + custom_paths
-    write_manifest(ordered, removed_ids, exclusion_record, all_source_files, dist / "build_manifest.json")
+    write_manifest(ordered, removed_ids, exclusion_record,
+                   corpus_data.source_files, dist / "build_manifest.json")
+
+    return ordered, removed_ids, exclusion_record, output_path
+
+
+def main() -> None:
+    argparse.ArgumentParser(description="Build the merged YARA ruleset.").parse_args()
+    setup_logging()
+
+    root = ROOT
+    logger.info("Starting ruleset build (root: {})", root)
+    try:
+        ordered, removed_ids, exclusion_record, output_path = _build(root)
+    except (ConfigError, PipelineError) as exc:
+        logger.error("Build failed: {}", exc)
+        sys.exit(1)
 
     vendor_n = sum(1 for r in ordered if r.origin == "vendor")
     override_n = sum(1 for r in ordered if r.origin == "overrides")
     custom_n = sum(1 for r in ordered if r.origin == "custom")
     filtered_n = len(exclusion_record)
-    print(
-        f"Build complete: {len(ordered)} rules "
-        f"({vendor_n} vendor, {override_n} overrides, {custom_n} custom"
-        + (f", {filtered_n} filtered out" if filtered_n else "")
-        + f") → {output_path}"
-    )
     if removed_ids:
-        print(f"Removed vendor rules ({len(removed_ids)}): {', '.join(removed_ids)}")
+        logger.info(
+            "Removed {} superseded vendor rule(s): {}",
+            len(removed_ids), ", ".join(removed_ids),
+        )
+    logger.success(
+        "Build complete: {} rules ({} vendor, {} overrides, {} custom{}) → {}",
+        len(ordered), vendor_n, override_n, custom_n,
+        f", {filtered_n} filtered out" if filtered_n else "",
+        output_path,
+    )
 
 
 if __name__ == "__main__":

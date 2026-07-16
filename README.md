@@ -22,7 +22,7 @@ The pipeline produces artifacts; deploying them to the detection platform is a s
 
 **Three rule classes.** *Vendor* rules arrive as one or more `.yara` files from a third party and are committed as received. *Custom* rules are written in-house. *Overrides* are in-house rules that replace specific vendor rules.
 
-**Override means removal.** YARA rejects two rules with the same identifier in one compilation unit, and the deployable output is a single unit. So overriding a vendor rule does not mean shipping yours alongside it — it means the build **removes** the named vendor rule(s) and substitutes your replacement. Which vendor rules each override supersedes is declared explicitly in `rules/overrides/override_manifest.yaml`, both to make removal deterministic and to keep an audit trail. The build fails if an override points at a vendor rule that no longer exists (a *stale override*).
+**Override means removal.** YARA rejects two rules with the same identifier in one compilation unit, and the deployable output is a single unit. So overriding a vendor rule does not mean shipping yours alongside it — it means the build **removes** the named vendor rule(s) and substitutes your replacement. Which vendor rules each override supersedes is declared explicitly in `overrides/override_manifest.yaml`, both to make removal deterministic and to keep an audit trail. The build fails if an override points at a vendor rule that no longer exists (a *stale override*).
 
 **Filters are a selection layer.** The filter policy (`filters/filter_policy.yaml`) decides which rules from the merged corpus reach the output — globally, per source ruleset, or per individual rule. It never deletes source rules; a filtered-out rule stays in the repo and can be re-included by editing policy. The build guards against the subtle failure modes (filtering out an override leaves a coverage gap; excluding a rule that a surviving rule references breaks compilation; an over-narrow allowlist shipping almost nothing).
 
@@ -38,8 +38,10 @@ The pipeline produces artifacts; deploying them to the detection platform is a s
 │   ├── vendor/*.yara            # vendor rules (one or more files), committed as received
 │   ├── custom/                  # in-house rules, grouped by category
 │   └── overrides/
-│       ├── overrides.yara       # replacement rules
-│       └── override_manifest.yaml  # which vendor rules each override supersedes + why
+│       └── overrides.yara       # replacement rules
+├── overrides/                   # override metadata (kept out of rules/)
+│   ├── override_manifest.yaml   # which vendor rules each override supersedes + why
+│   └── stale_override_decisions.yaml  # reviewer keep/discard decisions for stale overrides
 ├── filters/filter_policy.yaml   # include/exclude selection layer
 ├── scripts/
 │   ├── build_ruleset.py         # parse → strip → merge → filter → order → compile → manifest
@@ -67,7 +69,7 @@ Build outputs land in `dist/`: `merged_rules.yara` (source) and `build_manifest.
 
 **Add a custom rule.** Drop a `.yara` file under the appropriate `rules/custom/` subdirectory. Include the required metadata (author, date, description, reference, severity) or lint will reject it.
 
-**Override a vendor rule.** Add your replacement to `rules/overrides/overrides.yara`, then declare what it supersedes in `rules/overrides/override_manifest.yaml`:
+**Override a vendor rule.** Add your replacement to `rules/overrides/overrides.yara`, then declare what it supersedes in `overrides/override_manifest.yaml`:
 
 ```yaml
 overrides:

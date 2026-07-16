@@ -7,122 +7,48 @@ Importable:   check_overrides.validate(vendor_rules, override_rules,
                                         manifest_entries, config, root)
 """
 
+import argparse
 import sys
-import collections
 from pathlib import Path
 
-import yaml
+from loguru import logger
 
-_Rule = collections.namedtuple("_Rule", ["identifier"])
-
-
-def _parse_rules_standalone(paths: list) -> list:
-    """Minimal plyara parse — extracts rule identifiers only."""
-    import plyara as plyara_mod
-    records = []
-    for path in sorted(Path(p) for p in paths):
-        if not path.exists():
-            continue
-        parser = plyara_mod.Plyara()
-        try:
-            parsed = parser.parse_string(path.read_text())
-        except Exception as exc:
-            print(f"ERROR: failed to parse {path}: {exc}", file=sys.stderr)
-            sys.exit(1)
-        for rule in parsed:
-            records.append(_Rule(identifier=rule["rule_name"]))
-    return records
-
-
-def _load_decisions_file(decisions_path: Path, list_key: str, secondary_field: str) -> dict:
-    """Generic loader for pipeline decisions YAML files.
-
-    Returns {(override_rule, secondary_field_value | None): decision_str}.
-    A None secondary value acts as a wildcard covering all secondaries for that override rule.
-    Returns {} when the file does not exist.
-    """
-    if not decisions_path.exists():
-        return {}
-    try:
-        with decisions_path.open() as f:
-            data = yaml.safe_load(f) or {}
-    except Exception as exc:
-        print(f"ERROR: could not read {decisions_path}: {exc}", file=sys.stderr)
-        sys.exit(1)
-    result = {}
-    for entry in (data.get(list_key) or []):
-        override_rule = entry.get("override_rule")
-        secondary = entry.get(secondary_field)  # None when absent → wildcard
-        decision = (entry.get("decision") or "").strip().lower()
-        if override_rule:
-            result[(override_rule, secondary)] = decision
-    return result
-
-
-def _load_decisions(decisions_path: Path) -> dict:
-    """Load stale_override_decisions.yaml; returns {(override_rule, missing_vendor_rule): decision}."""
-    return _load_decisions_file(decisions_path, "stale_override_decisions", "missing_vendor_rule")
-
-
-def _lookup_decision(decisions: dict, override_rule: str, vendor_id: str):
-    """Return the recorded decision for a stale (override_rule, vendor_id) pair.
-
-    Checks the specific (override_rule, vendor_id) key first, then falls back
-    to the wildcard (override_rule, None). Returns None if no decision is recorded.
-    """
-    specific = decisions.get((override_rule, vendor_id))
-    if specific is not None:
-        return specific
-    return decisions.get((override_rule, None))
+import config_schema
+import corpus
+from config_schema import ConfigError
+from corpus import PipelineError
+from logging_setup import setup_logging
 
 
 def validate(
     vendor_rules: list,
     override_rules: list,
-    manifest_entries: list,
-    config: dict,
+    manifest_entries: list,   # list[config_schema.OverrideEntry]
+    config,                   # config_schema.BuildConfig
     root: Path,
 ) -> None:
     """Validate the override manifest and enforce the stale-override checkpoint.
 
-    Exits with sys.exit(1) on structural errors or unresolved stale entries.
-    Prints required cleanup actions for 'discard' decisions (non-blocking).
+    Shape/type of manifest_entries is already guaranteed by config_schema; this
+    performs the corpus-dependent semantic checks. Raises PipelineError on
+    semantic errors or unresolved stale entries. Prints required cleanup actions
+    for 'discard' decisions (non-blocking).
     """
     vendor_ids = {r.identifier for r in vendor_rules}
     override_ids = {r.identifier for r in override_rules}
 
-    # --- Structural checks ---
+    # --- Semantic checks (shape/type already enforced at load by config_schema) ---
     errors = []
-    seen_claimed: dict = {}  # vendor_id -> override_rule (or sentinel) that claimed it
+    seen_claimed: dict = {}  # vendor_id -> override_rule that claimed it
 
-    for i, entry in enumerate(manifest_entries):
-        override_rule = entry.get("override_rule")
-        supersedes = entry.get("supersedes")
-
-        if not override_rule:
-            errors.append(f"manifest entry {i} is missing 'override_rule'")
-            # Still record claims so duplicate-claim errors are reported even for
-            # malformed entries.
-            for vid in (supersedes or []):
-                if vid in seen_claimed:
-                    errors.append(
-                        f"vendor rule {vid!r} is claimed by multiple override entries: "
-                        f"{seen_claimed[vid]!r} and entry {i} (missing 'override_rule')"
-                    )
-                else:
-                    seen_claimed[vid] = f"<entry {i}>"
-            continue
+    for entry in manifest_entries:
+        override_rule = entry.override_rule
+        supersedes = entry.supersedes
 
         if override_rule not in override_ids:
             errors.append(
                 f"override_rule {override_rule!r} not found in overrides corpus"
             )
-
-        if not supersedes:
-            errors.append(
-                f"manifest entry for {override_rule!r} has an empty or missing 'supersedes' list"
-            )
-            continue
 
         for vid in supersedes:
             if vid in override_ids:
@@ -140,22 +66,23 @@ def validate(
 
     if errors:
         for e in errors:
-            print(f"ERROR: {e}", file=sys.stderr)
-        sys.exit(1)
+            logger.error(e)
+        raise PipelineError(
+            f"override manifest failed validation ({len(errors)} error(s))"
+        )
 
     # --- Load decisions ---
-    decisions_path = root / config["stale_override_decisions"]
-    decisions = _load_decisions(decisions_path)
+    decisions_path = root / config.stale_override_decisions
+    decisions = config_schema.load_decisions_map(
+        decisions_path, "stale_override_decisions", "missing_vendor_rule")
 
     # --- Warn on stale decision records (vendor rule re-introduced) ---
     for (override_rule, missing_vid), _ in decisions.items():
         if missing_vid is not None and missing_vid in vendor_ids:
-            print(
-                f"WARNING: decision record for missing vendor rule {missing_vid!r} under "
-                f"{override_rule!r} is now stale — {missing_vid!r} is back in the vendor "
-                f"corpus. Remove or update this entry in "
-                f"{config['stale_override_decisions']}.",
-                file=sys.stderr,
+            logger.warning(
+                "Decision record for missing vendor rule {!r} under {!r} is now stale "
+                "— {!r} is back in the vendor corpus. Remove or update this entry in {}.",
+                missing_vid, override_rule, missing_vid, config.stale_override_decisions,
             )
 
     # --- Stale detection (per missing vendor ID, not per manifest entry) ---
@@ -163,81 +90,77 @@ def validate(
     cleanup = []    # (override_rule, vendor_id)
 
     for entry in manifest_entries:
-        override_rule = entry["override_rule"]
-        for vid in entry.get("supersedes", []):
+        override_rule = entry.override_rule
+        for vid in entry.supersedes:
             if vid in vendor_ids:
                 continue
-            decision = _lookup_decision(decisions, override_rule, vid)
+            # decision is None (no record), "keep", or "discard" — the value set
+            # is validated at load time by config_schema.
+            decision = config_schema.lookup_decision(decisions, override_rule, vid)
             if decision is None:
                 blocking.append((override_rule, vid))
-            elif decision == "keep":
-                pass
             elif decision == "discard":
                 cleanup.append((override_rule, vid))
-            else:
-                print(
-                    f"WARNING: unrecognized decision {decision!r} for "
-                    f"{override_rule!r}/{vid!r} — treating as no decision (blocked)",
-                    file=sys.stderr,
-                )
-                blocking.append((override_rule, vid))
 
     if blocking:
-        print("STALE OVERRIDE CHECKPOINT — build blocked.\n", file=sys.stderr)
-        print(
-            "The following overrides name vendor rules no longer in the vendor corpus.\n"
-            f"Record a decision in: {config['stale_override_decisions']}\n",
-            file=sys.stderr,
-        )
+        lines = [
+            "STALE OVERRIDE CHECKPOINT — build blocked.",
+            "",
+            "The following overrides name vendor rules no longer in the vendor corpus.",
+            f"Record a decision in: {config.stale_override_decisions}",
+            "",
+        ]
         for override_rule, vendor_id in blocking:
-            print(f"  override_rule: {override_rule}", file=sys.stderr)
-            print(f"    missing vendor rule: {vendor_id}", file=sys.stderr)
-            print(f"    → add entry:", file=sys.stderr)
-            print(f"        - override_rule: {override_rule}", file=sys.stderr)
-            print(f"          missing_vendor_rule: {vendor_id}", file=sys.stderr)
-            print(f"          decision: keep    # or: discard", file=sys.stderr)
-            print(f"          reviewer: <name>", file=sys.stderr)
-            print(f"          date: <YYYY-MM-DD>", file=sys.stderr)
-            print(file=sys.stderr)
-        sys.exit(1)
+            lines += [
+                f"  override_rule: {override_rule}",
+                f"    missing vendor rule: {vendor_id}",
+                f"    → add entry:",
+                f"        - override_rule: {override_rule}",
+                f"          missing_vendor_rule: {vendor_id}",
+                f"          decision: keep    # or: discard",
+                f"          reviewer: <name>",
+                f"          date: <YYYY-MM-DD>",
+                "",
+            ]
+        logger.error("\n".join(lines))
+        raise PipelineError(
+            f"stale override checkpoint: {len(blocking)} unresolved entr"
+            f"{'y' if len(blocking) == 1 else 'ies'}"
+        )
 
     if cleanup:
-        print("REQUIRED CLEANUP — 'discard' decisions pending manual action:\n")
+        lines = ["REQUIRED CLEANUP — 'discard' decisions pending manual action:", ""]
         for override_rule, vendor_id in cleanup:
-            print(f"  - Remove rule {override_rule!r} from rules/overrides/overrides.yara")
-            print(
-                f"    (was superseding {vendor_id!r}, which is no longer in the vendor corpus)"
-            )
-            print(
+            lines += [
+                f"  - Remove rule {override_rule!r} from rules/overrides/overrides.yara",
+                f"    (was superseding {vendor_id!r}, which is no longer in the vendor corpus)",
                 f"  - Remove the manifest entry for {override_rule!r} "
-                f"from rules/overrides/override_manifest.yaml"
-            )
-        print()
+                f"from overrides/override_manifest.yaml",
+            ]
+        logger.warning("\n".join(lines))
 
 
 def main() -> None:
-    import argparse
     argparse.ArgumentParser(
         description="Validate the override manifest and check for stale overrides."
     ).parse_args()
+    setup_logging()
 
     root = Path(__file__).resolve().parent.parent
 
-    with (root / "config" / "build.yaml").open() as f:
-        config = yaml.safe_load(f)
+    try:
+        config = config_schema.load_build_config(root)
+        manifest_entries = config_schema.load_override_manifest(root)
 
-    with (root / "rules" / "overrides" / "override_manifest.yaml").open() as f:
-        data = yaml.safe_load(f) or {}
-    manifest_entries = data.get("overrides", [])
+        corpus_data = corpus.load_corpus(root)
 
-    vendor_paths = sorted((root / "rules" / "vendor").glob("*.yara"))
-    vendor_rules = _parse_rules_standalone(vendor_paths)
+        validate(corpus_data.vendor_rules, corpus_data.override_rules,
+                 manifest_entries, config, root)
+    except (ConfigError, PipelineError) as exc:
+        logger.error("Override check failed: {}", exc)
+        sys.exit(1)
 
-    override_path = root / "rules" / "overrides" / "overrides.yara"
-    override_rules = _parse_rules_standalone([override_path])
-
-    validate(vendor_rules, override_rules, manifest_entries, config, root)
-    print("Override manifest OK.")
+    logger.success("Override manifest OK.")
 
 
 if __name__ == "__main__":

@@ -7,17 +7,18 @@ Importable:  apply_filters.run(rules, policy, root, manifest_entries, config)
              -> (included_rules, exclusion_record)
 """
 
+import argparse
 import fnmatch
 import re
 import sys
 from pathlib import Path
 
-import yaml
+from loguru import logger
 
-from check_overrides import (
-    _lookup_decision as _lookup_gap_decision,
-    _load_decisions_file,
-)
+import config_schema
+import corpus
+from corpus import PipelineError
+from logging_setup import setup_logging
 
 
 # ---------------------------------------------------------------------------
@@ -27,7 +28,7 @@ from check_overrides import (
 def _scope_specificity(scope: str) -> int:
     if scope.startswith("rule:"):
         return 0
-    if scope in {"vendor", "custom", "overrides"}:
+    if scope in config_schema.ORIGIN_SCOPES:
         return 1
     return 2  # "global" or anything unrecognised
 
@@ -44,49 +45,34 @@ def _scope_applies(scope: str, rule) -> bool:
 # Selector matching
 # ---------------------------------------------------------------------------
 
-def _normalize_filters(filters: list) -> list:
-    """Pre-convert meta_in value lists to frozensets of strings for O(1) lookups."""
-    normalized = []
-    for f in filters:
-        match = f.get("match")
-        if match and "meta_in" in match:
-            f = dict(f)
-            f["match"] = {**match, "meta_in": {
-                k: frozenset(str(x) for x in vs)
-                for k, vs in match["meta_in"].items()
-            }}
-        normalized.append(f)
-    return normalized
-
-
-def _selector_matches(filter_entry: dict, rule, rule_tags=None) -> bool:
-    match = filter_entry.get("match")
-    if not match:
+def _selector_matches(filter_entry, rule, rule_tags=None) -> bool:
+    match = filter_entry.match
+    if match is None:
         return True
 
-    if "name" in match and rule.identifier != match["name"]:
+    if match.name is not None and rule.identifier != match.name:
         return False
 
-    if "name_glob" in match and not fnmatch.fnmatch(rule.identifier, match["name_glob"]):
+    if match.name_glob is not None and not fnmatch.fnmatch(rule.identifier, match.name_glob):
         return False
 
-    if "name_regex" in match and not re.search(match["name_regex"], rule.identifier):
+    if match.name_regex is not None and not re.search(match.name_regex, rule.identifier):
         return False
 
-    if "tags" in match:
+    if match.tags is not None:
         if rule_tags is None:
             rule_tags = frozenset(rule.tags)
-        if not all(t in rule_tags for t in match["tags"]):
+        if not all(t in rule_tags for t in match.tags):
             return False
 
-    if "meta" in match:
-        for k, v in match["meta"].items():
+    if match.meta is not None:
+        for k, v in match.meta.items():
             if str(rule.meta.get(k)) != str(v):
                 return False
 
-    if "meta_in" in match:
-        for k, vs in match["meta_in"].items():
-            if str(rule.meta.get(k)) not in vs:  # vs is a frozenset after normalization
+    if match.meta_in is not None:
+        for k, vs in match.meta_in.items():
+            if str(rule.meta.get(k)) not in vs:  # vs is a frozenset (FilterMatch.__post_init__)
                 return False
 
     return True
@@ -100,7 +86,7 @@ def _resolve_rule(rule, filters: list, default_mode: str, conflict_policy: str) 
     """Return (action, responsible_filter | None)."""
     applicable = [
         f for f in filters
-        if _scope_applies(f.get("scope", "global"), rule)
+        if _scope_applies(f.scope, rule)
         and _selector_matches(f, rule)
     ]
 
@@ -109,58 +95,44 @@ def _resolve_rule(rule, filters: list, default_mode: str, conflict_policy: str) 
 
     by_spec: dict = {}
     for f in applicable:
-        spec = _scope_specificity(f.get("scope", "global"))
+        spec = _scope_specificity(f.scope)
         by_spec.setdefault(spec, []).append(f)
 
     best_spec = min(by_spec)
     best = by_spec[best_spec]
 
-    actions = {f["action"] for f in best}
+    actions = {f.action for f in best}
     if len(actions) == 1:
         return next(iter(actions)), best[-1]
 
     # Conflict at the same specificity level — apply tie-break policy.
+    # action values are validated at load (include|exclude), so exclude_wins
+    # always finds an 'exclude' when actions disagree.
     if conflict_policy == "exclude_wins":
         for f in reversed(best):
-            if f["action"] == "exclude":
+            if f.action == "exclude":
                 return "exclude", f
-        # No "exclude" found — likely an unrecognised action value in the policy.
-        bad = {f["action"] for f in best} - {"include", "exclude"}
-        ids = [f.get("id", "<no-id>") for f in best]
-        print(
-            f"ERROR: exclude_wins found no 'exclude' action among filters {ids} "
-            f"for rule {rule.identifier!r}. "
-            f"Unrecognised action values: {bad}. Valid values are 'include' and 'exclude'.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+        return best[-1].action, best[-1]
     elif conflict_policy == "last_match_wins":
-        return best[-1]["action"], best[-1]
+        return best[-1].action, best[-1]
     else:  # "error"
-        ids = [f.get("id", "<no-id>") for f in best]
-        print(
-            f"ERROR: conflicting same-specificity filters for rule {rule.identifier!r}: "
+        ids = [f.id or "<no-id>" for f in best]
+        raise PipelineError(
+            f"conflicting same-specificity filters for rule {rule.identifier!r}: "
             f"{ids}. Resolve the conflict or set filter_conflict_policy to exclude_wins "
-            f"or last_match_wins.",
-            file=sys.stderr,
+            f"or last_match_wins."
         )
-        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
 # Coverage-gap checkpoint
 # ---------------------------------------------------------------------------
 
-def _load_gap_decisions(decisions_path: Path) -> dict:
-    """Load coverage_gap_decisions.yaml; returns {(override_rule, filter_id | None): decision}."""
-    return _load_decisions_file(decisions_path, "coverage_gap_decisions", "filter_id")
-
-
 def _coverage_gap_check(
     exclusion_record: list,
     manifest_entries: list,
     root: Path,
-    config: dict,
+    config,  # config_schema.BuildConfig
 ) -> None:
     # After strip_superseded, every superseded vendor rule is absent from the corpus —
     # either stripped in this build or already gone from a prior vendor update. Any
@@ -168,16 +140,15 @@ def _coverage_gap_check(
     # whether the vendor removal happened in this run or an earlier one.
     override_supersedes: dict = {}
     for entry in manifest_entries:
-        or_ = entry.get("override_rule")
-        sups = entry.get("supersedes") or []
-        if or_ and sups:
-            override_supersedes[or_] = set(sups)
+        if entry.supersedes:
+            override_supersedes[entry.override_rule] = set(entry.supersedes)
 
     if not override_supersedes:
         return
 
-    decisions_path = root / config["coverage_gap_decisions"]
-    decisions = _load_gap_decisions(decisions_path)
+    decisions_path = root / config.coverage_gap_decisions
+    decisions = config_schema.load_decisions_map(
+        decisions_path, "coverage_gap_decisions", "filter_id")
 
     blocking = []   # (override_rule, filter_id)
     cleanup = []    # (override_rule, filter_id)
@@ -187,52 +158,56 @@ def _coverage_gap_check(
         if identifier not in override_supersedes:
             continue
         filter_id = rec.get("filter_id")
-        decision = _lookup_gap_decision(decisions, identifier, filter_id)
+        # decision is None, "keep", or "discard" — validated at load by config_schema.
+        decision = config_schema.lookup_decision(decisions, identifier, filter_id)
         if decision is None:
             blocking.append((identifier, filter_id))
-        elif decision == "keep":
-            pass
         elif decision == "discard":
             cleanup.append((identifier, filter_id))
-        else:
-            print(
-                f"WARNING: unrecognised decision {decision!r} for coverage gap "
-                f"{identifier!r}/{filter_id!r} — treating as no decision (blocked)",
-                file=sys.stderr,
-            )
-            blocking.append((identifier, filter_id))
 
     if cleanup:
-        print("REQUIRED ACTION — coverage-gap 'discard' decisions pending manual revision:\n")
+        lines = [
+            "REQUIRED ACTION — coverage-gap 'discard' decisions pending manual revision:",
+            "",
+        ]
         for override_rule, filter_id in cleanup:
-            print(f"  - Revise the filter policy so {override_rule!r} is no longer excluded")
+            lines.append(
+                f"  - Revise the filter policy so {override_rule!r} is no longer excluded"
+            )
             if filter_id:
-                print(f"    (responsible filter: {filter_id})")
-        print()
+                lines.append(f"    (responsible filter: {filter_id})")
+        logger.warning("\n".join(lines))
 
     if blocking:
-        print("COVERAGE GAP CHECKPOINT — build blocked.\n", file=sys.stderr)
-        print(
-            "The following override rules are excluded by a filter, but the vendor rules\n"
-            f"they superseded have already been removed. Record a decision in:\n"
-            f"  {config['coverage_gap_decisions']}\n",
-            file=sys.stderr,
-        )
+        lines = [
+            "COVERAGE GAP CHECKPOINT — build blocked.",
+            "",
+            "The following override rules are excluded by a filter, but the vendor rules",
+            "they superseded have already been removed. Record a decision in:",
+            f"  {config.coverage_gap_decisions}",
+            "",
+        ]
         for override_rule, filter_id in blocking:
-            print(f"  override_rule: {override_rule}", file=sys.stderr)
+            lines.append(f"  override_rule: {override_rule}")
             if filter_id:
-                print(f"    responsible filter: {filter_id}", file=sys.stderr)
-            print(f"    → add entry:", file=sys.stderr)
-            print(f"        - override_rule: {override_rule}", file=sys.stderr)
+                lines.append(f"    responsible filter: {filter_id}")
+            lines.append(f"    → add entry:")
+            lines.append(f"        - override_rule: {override_rule}")
             if filter_id:
                 # Include filter_id to scope this decision to one filter.
                 # Omit it to create a wildcard that covers all filters for this override.
-                print(f"          filter_id: {filter_id}", file=sys.stderr)
-            print(f"          decision: keep    # or: discard", file=sys.stderr)
-            print(f"          reviewer: <name>", file=sys.stderr)
-            print(f"          date: <YYYY-MM-DD>", file=sys.stderr)
-            print(file=sys.stderr)
-        sys.exit(1)
+                lines.append(f"          filter_id: {filter_id}")
+            lines += [
+                f"          decision: keep    # or: discard",
+                f"          reviewer: <name>",
+                f"          date: <YYYY-MM-DD>",
+                "",
+            ]
+        logger.error("\n".join(lines))
+        raise PipelineError(
+            f"coverage gap checkpoint: {len(blocking)} unresolved entr"
+            f"{'y' if len(blocking) == 1 else 'ies'}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -250,29 +225,29 @@ def _referential_integrity_check(included_rules: list, excluded_ids: set) -> Non
                 )
     if errors:
         for e in errors:
-            print(f"ERROR: {e}", file=sys.stderr)
-        sys.exit(1)
+            logger.error(e)
+        raise PipelineError(
+            f"referential integrity: {len(errors)} included rule(s) reference "
+            f"excluded rules"
+        )
 
 
 # ---------------------------------------------------------------------------
 # Floor guard
 # ---------------------------------------------------------------------------
 
-def _floor_guard(included_count: int, policy: dict) -> None:
-    min_rules = policy.get("min_output_rules")
-    if min_rules is None:
-        min_rules = 1
+def _floor_guard(included_count: int, policy) -> None:
+    min_rules = policy.min_output_rules
     if included_count < min_rules:
         msg = (
             f"Filter policy produced {included_count} rules, "
             f"below min_output_rules={min_rules}."
         )
-        on_empty = policy.get("on_empty_output", "fail")
+        on_empty = policy.on_empty_output
         if on_empty == "warn":
-            print(f"WARNING: {msg}")
+            logger.warning(msg)
         else:
-            print(f"ERROR: {msg}", file=sys.stderr)
-            sys.exit(1)
+            raise PipelineError(msg)
 
 
 # ---------------------------------------------------------------------------
@@ -281,19 +256,20 @@ def _floor_guard(included_count: int, policy: dict) -> None:
 
 def run(
     rules: list,
-    policy: dict,
+    policy,
     root: Path,
     manifest_entries: list,
-    config: dict,
+    config,
 ) -> tuple:
     """Apply the filter policy to the post-strip corpus.
 
+    policy is a config_schema.FilterPolicy; config is a config_schema.BuildConfig.
     Returns (included_rules, exclusion_record).
     exclusion_record: list of {identifier, filter_id, reason}.
     """
-    conflict_policy = config.get("filter_conflict_policy", "exclude_wins")
-    default_mode = policy.get("default_mode", "include_all")
-    filters = _normalize_filters(policy.get("filters") or [])
+    conflict_policy = config.filter_conflict_policy
+    default_mode = policy.default_mode
+    filters = policy.filters
 
     included = []
     exclusion_record = []
@@ -305,9 +281,9 @@ def run(
         else:
             exclusion_record.append({
                 "identifier": rule.identifier,
-                "filter_id": responsible.get("id") if responsible else None,
+                "filter_id": responsible.id if responsible else None,
                 "reason": (
-                    responsible.get("reason", "") if responsible
+                    (responsible.reason or "") if responsible
                     else f"default_mode: {default_mode}"
                 ),
             })
@@ -325,7 +301,6 @@ def run(
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    import argparse
     parser = argparse.ArgumentParser(
         description="Preview filter policy effects without building."
     )
@@ -334,52 +309,49 @@ def main() -> None:
         help="Preview what the current filter policy would include/exclude (default behavior).",
     )
     parser.parse_args()
+    setup_logging()
 
     root = Path(__file__).resolve().parent.parent
 
-    # Lazy imports avoid circular dependency at module-init time and reuse
-    # the production parse, strip, and config-load logic rather than duplicating it.
-    from build_ruleset import (
-        parse_yara_files,
-        strip_superseded,
-        load_config,
-        load_manifest,
-        load_filter_policy,
-    )
-
-    config = load_config(root)
-    manifest_entries = load_manifest(root)
-    policy = load_filter_policy(root)
-
-    vendor_paths = sorted((root / "rules" / "vendor").glob("*.yara"))
-    override_path = root / "rules" / "overrides" / "overrides.yara"
-    custom_paths = sorted((root / "rules" / "custom").rglob("*.yara"))
-
-    vendor_rules = parse_yara_files(vendor_paths, "vendor")
-    override_rules = parse_yara_files([override_path], "overrides")
-    custom_rules = parse_yara_files(custom_paths, "custom")
-
-    # Run override validation so preview faithfully reflects build behaviour,
-    # including blocking on unresolved stale overrides before showing filter effects.
+    # check_overrides is imported here (not at module level) because it is only
+    # needed for the standalone preview, not by the importable run() API.
     import check_overrides
-    check_overrides.validate(vendor_rules, override_rules, manifest_entries, config, root)
+    from config_schema import ConfigError
 
-    vendor_remainder, _ = strip_superseded(vendor_rules, manifest_entries)
-    corpus = vendor_remainder + override_rules + custom_rules
+    try:
+        config = config_schema.load_build_config(root)
+        manifest_entries = config_schema.load_override_manifest(root)
+        policy = config_schema.load_filter_policy(root)
 
-    included, exclusion_record = run(corpus, policy, root, manifest_entries, config)
+        corpus_data = corpus.load_corpus(root)
 
-    print(f"PREVIEW — filter policy: {root / 'filters' / 'filter_policy.yaml'}")
-    print(f"  default_mode : {policy.get('default_mode', 'include_all')}")
-    print(f"  active filters: {len(policy.get('filters') or [])}")
-    print(f"  corpus (post-strip): {len(corpus)} rules")
-    print(f"  included : {len(included)}")
-    print(f"  excluded : {len(exclusion_record)}")
-    if exclusion_record:
-        print()
-        for rec in exclusion_record:
-            fid = rec['filter_id'] or 'default_mode'
-            print(f"  EXCLUDE  {rec['identifier']}  (filter: {fid}, reason: {rec['reason']})")
+        # Run override validation so preview faithfully reflects build behaviour,
+        # including blocking on unresolved stale overrides before showing filter effects.
+        check_overrides.validate(corpus_data.vendor_rules, corpus_data.override_rules,
+                                 manifest_entries, config, root)
+
+        vendor_remainder, _ = corpus.strip_superseded(corpus_data.vendor_rules, manifest_entries)
+        post_strip = vendor_remainder + corpus_data.override_rules + corpus_data.custom_rules
+
+        included, exclusion_record = run(post_strip, policy, root, manifest_entries, config)
+    except (ConfigError, PipelineError) as exc:
+        logger.error("Filter preview failed: {}", exc)
+        sys.exit(1)
+
+    lines = [
+        f"PREVIEW — filter policy: {root / 'filters' / 'filter_policy.yaml'}",
+        f"  default_mode : {policy.default_mode}",
+        f"  active filters: {len(policy.filters)}",
+        f"  corpus (post-strip): {len(post_strip)} rules",
+        f"  included : {len(included)}",
+        f"  excluded : {len(exclusion_record)}",
+    ]
+    for rec in exclusion_record:
+        fid = rec['filter_id'] or 'default_mode'
+        lines.append(
+            f"  EXCLUDE  {rec['identifier']}  (filter: {fid}, reason: {rec['reason']})"
+        )
+    logger.info("\n".join(lines))
 
 
 if __name__ == "__main__":

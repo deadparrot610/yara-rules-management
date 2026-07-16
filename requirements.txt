@@ -2,3 +2,4 @@ plyara
 yara-python
 pytest
 pyyaml
+loguru
