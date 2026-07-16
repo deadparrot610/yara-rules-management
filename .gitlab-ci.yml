@@ -7,6 +7,16 @@
 #
 # pcap-test (Phase 7) and package (Phase 8) are intentionally not defined yet.
 
+# Run a merge-request pipeline for every open MR, and a branch pipeline
+# otherwise. The middle rule suppresses the redundant branch pipeline while an
+# MR is open on that branch, so a single push never triggers two pipelines.
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - if: $CI_COMMIT_BRANCH
+
 stages:
   - image
   - lint
