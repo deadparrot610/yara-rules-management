@@ -11,3 +11,11 @@ cases:
     expect_no_match: [vendor_override]           # proves the override removed the vendor rule
   - fixture: samples/text_synthetic.bin
     expect_match: [feature_text_strings, feature_nocase]
+  - fixture: samples/wide_synthetic.bin
+    expect_match: [feature_wide_string]
+  - fixture: samples/hex_synthetic.bin
+    expect_match: [feature_hex_exact, feature_hex_wildcard, feature_hex_jump, feature_entrypoint_stub]
+  - fixture: samples/deps_synthetic.bin
+    expect_match: [feature_rule_dependency, feature_chain_level_c]
+  - fixture: samples/tags_synthetic.bin
+    expect_match: [feature_tags]

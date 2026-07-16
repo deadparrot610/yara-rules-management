@@ -29,6 +29,10 @@ def _xor(data: bytes, key: int) -> bytes:
     return bytes(b ^ key for b in data)
 
 
+def _utf16le(s: str) -> bytes:
+    return s.encode("utf-16-le")
+
+
 # name -> bytes. Detection fixtures under samples/, benign ones under clean/.
 SAMPLES: dict[str, bytes] = {
     # Marker + the override's string "overriden". Note "override" (the superseded
@@ -43,6 +47,21 @@ SAMPLES: dict[str, bytes] = {
     # single-byte XOR key. Would match feature_xor if that rule were present; used
     # by the filter-proof test.
     "xor_synthetic.bin": MARKER + _xor(b"XOR_SECRET", 0x42) + b"\n",
+    # "WIDE_STRING" as UTF-16LE (each char followed by a 0x00 byte) -> feature_wide_string.
+    "wide_synthetic.bin": MARKER + _utf16le("WIDE_STRING") + b"\n",
+    # MZ (4D 5A) at offset 0 for feature_entrypoint_stub ($mz at 0), plus hex byte
+    # patterns: DE AD BE EF (feature_hex_exact + feature_hex_wildcard "DE AD ?? EF")
+    # and DE AD 99 CA FE (feature_hex_jump "DE AD [1-4] CA FE"). Marker sits after MZ.
+    "hex_synthetic.bin": b"\x4d\x5a" + MARKER
+    + b"\xde\xad\xbe\xef" + b"\xde\xad\x99\xca\xfe" + b"\n",
+    # Dependency chains: DEP_BASE_MARKER + DEP_EXTRA fire feature_rule_dependency via
+    # the private base_has_marker; CHAIN_A/B/C fire feature_chain_level_c via the
+    # private chain_level_b -> chain_level_a. Private rules aren't reported by YARA;
+    # the case pins the public rules that depend on them.
+    "deps_synthetic.bin": MARKER
+    + b"DEP_BASE_MARKER\nDEP_EXTRA\nCHAIN_A\nCHAIN_B\nCHAIN_C\n",
+    # "TAGGED_SAMPLE" -> feature_tags (a tagged detection rule).
+    "tags_synthetic.bin": MARKER + b"TAGGED_SAMPLE\n",
 }
 
 CLEAN: dict[str, bytes] = {
