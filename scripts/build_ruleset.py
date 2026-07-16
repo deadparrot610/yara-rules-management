@@ -19,12 +19,14 @@ from pathlib import Path
 
 import plyara
 import yara
+from loguru import logger
 
 import config_schema
 import check_overrides
 import apply_filters
 from config_schema import ConfigError
 from corpus import PipelineError, parse_yara_files, strip_superseded, discover_sources
+from logging_setup import setup_logging
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -256,8 +258,14 @@ def _build(root: Path) -> tuple:
     vendor_rules = parse_yara_files(vendor_paths, "vendor")
     override_rules = parse_yara_files([override_path], "overrides")
     custom_rules = parse_yara_files(custom_paths, "custom")
+    logger.info(
+        "Parsed {} rules ({} vendor, {} overrides, {} custom)",
+        len(vendor_rules) + len(override_rules) + len(custom_rules),
+        len(vendor_rules), len(override_rules), len(custom_rules),
+    )
 
     # --- Phase 2: stale-override validation ---
+    logger.debug("Validating override manifest")
     check_overrides.validate(vendor_rules, override_rules, manifest_entries, config, root)
 
     # --- Strip superseded vendor rules ---
@@ -288,7 +296,9 @@ def _build(root: Path) -> tuple:
 
     # --- Compile (authoritative validation gate) ---
     # Runs against the in-memory string so no unvalidated file is written first.
+    logger.debug("Compiling {} rules (validation gate)", len(ordered))
     compile_rules(merged_source, config.external_variables, rule_index)
+    logger.info("Compilation succeeded ({} rules)", len(ordered))
 
     # --- Emit source (only after compilation passes) ---
     dist = root / "dist"
@@ -305,26 +315,31 @@ def _build(root: Path) -> tuple:
 
 def main() -> None:
     argparse.ArgumentParser(description="Build the merged YARA ruleset.").parse_args()
+    setup_logging()
 
     root = ROOT
+    logger.info("Starting ruleset build (root: {})", root)
     try:
         ordered, removed_ids, exclusion_record, output_path = _build(root)
     except (ConfigError, PipelineError) as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        logger.error("Build failed: {}", exc)
         sys.exit(1)
 
     vendor_n = sum(1 for r in ordered if r.origin == "vendor")
     override_n = sum(1 for r in ordered if r.origin == "overrides")
     custom_n = sum(1 for r in ordered if r.origin == "custom")
     filtered_n = len(exclusion_record)
-    print(
-        f"Build complete: {len(ordered)} rules "
-        f"({vendor_n} vendor, {override_n} overrides, {custom_n} custom"
-        + (f", {filtered_n} filtered out" if filtered_n else "")
-        + f") → {output_path}"
-    )
     if removed_ids:
-        print(f"Removed vendor rules ({len(removed_ids)}): {', '.join(removed_ids)}")
+        logger.info(
+            "Removed {} superseded vendor rule(s): {}",
+            len(removed_ids), ", ".join(removed_ids),
+        )
+    logger.success(
+        "Build complete: {} rules ({} vendor, {} overrides, {} custom{}) → {}",
+        len(ordered), vendor_n, override_n, custom_n,
+        f", {filtered_n} filtered out" if filtered_n else "",
+        output_path,
+    )
 
 
 if __name__ == "__main__":

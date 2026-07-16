@@ -10,10 +10,13 @@ Importable:   check_overrides.validate(vendor_rules, override_rules,
 import sys
 from pathlib import Path
 
+from loguru import logger
+
 import config_schema
 import corpus
 from config_schema import ConfigError
 from corpus import PipelineError
+from logging_setup import setup_logging
 
 
 def validate(
@@ -62,7 +65,7 @@ def validate(
 
     if errors:
         for e in errors:
-            print(f"ERROR: {e}", file=sys.stderr)
+            logger.error(e)
         raise PipelineError(
             f"override manifest failed validation ({len(errors)} error(s))"
         )
@@ -75,12 +78,10 @@ def validate(
     # --- Warn on stale decision records (vendor rule re-introduced) ---
     for (override_rule, missing_vid), _ in decisions.items():
         if missing_vid is not None and missing_vid in vendor_ids:
-            print(
-                f"WARNING: decision record for missing vendor rule {missing_vid!r} under "
-                f"{override_rule!r} is now stale — {missing_vid!r} is back in the vendor "
-                f"corpus. Remove or update this entry in "
-                f"{config.stale_override_decisions}.",
-                file=sys.stderr,
+            logger.warning(
+                "Decision record for missing vendor rule {!r} under {!r} is now stale "
+                "— {!r} is back in the vendor corpus. Remove or update this entry in {}.",
+                missing_vid, override_rule, missing_vid, config.stale_override_decisions,
             )
 
     # --- Stale detection (per missing vendor ID, not per manifest entry) ---
@@ -101,39 +102,41 @@ def validate(
                 cleanup.append((override_rule, vid))
 
     if blocking:
-        print("STALE OVERRIDE CHECKPOINT — build blocked.\n", file=sys.stderr)
-        print(
-            "The following overrides name vendor rules no longer in the vendor corpus.\n"
-            f"Record a decision in: {config.stale_override_decisions}\n",
-            file=sys.stderr,
-        )
+        lines = [
+            "STALE OVERRIDE CHECKPOINT — build blocked.",
+            "",
+            "The following overrides name vendor rules no longer in the vendor corpus.",
+            f"Record a decision in: {config.stale_override_decisions}",
+            "",
+        ]
         for override_rule, vendor_id in blocking:
-            print(f"  override_rule: {override_rule}", file=sys.stderr)
-            print(f"    missing vendor rule: {vendor_id}", file=sys.stderr)
-            print(f"    → add entry:", file=sys.stderr)
-            print(f"        - override_rule: {override_rule}", file=sys.stderr)
-            print(f"          missing_vendor_rule: {vendor_id}", file=sys.stderr)
-            print(f"          decision: keep    # or: discard", file=sys.stderr)
-            print(f"          reviewer: <name>", file=sys.stderr)
-            print(f"          date: <YYYY-MM-DD>", file=sys.stderr)
-            print(file=sys.stderr)
+            lines += [
+                f"  override_rule: {override_rule}",
+                f"    missing vendor rule: {vendor_id}",
+                f"    → add entry:",
+                f"        - override_rule: {override_rule}",
+                f"          missing_vendor_rule: {vendor_id}",
+                f"          decision: keep    # or: discard",
+                f"          reviewer: <name>",
+                f"          date: <YYYY-MM-DD>",
+                "",
+            ]
+        logger.error("\n".join(lines))
         raise PipelineError(
             f"stale override checkpoint: {len(blocking)} unresolved entr"
             f"{'y' if len(blocking) == 1 else 'ies'}"
         )
 
     if cleanup:
-        print("REQUIRED CLEANUP — 'discard' decisions pending manual action:\n")
+        lines = ["REQUIRED CLEANUP — 'discard' decisions pending manual action:", ""]
         for override_rule, vendor_id in cleanup:
-            print(f"  - Remove rule {override_rule!r} from rules/overrides/overrides.yara")
-            print(
-                f"    (was superseding {vendor_id!r}, which is no longer in the vendor corpus)"
-            )
-            print(
+            lines += [
+                f"  - Remove rule {override_rule!r} from rules/overrides/overrides.yara",
+                f"    (was superseding {vendor_id!r}, which is no longer in the vendor corpus)",
                 f"  - Remove the manifest entry for {override_rule!r} "
-                f"from overrides/override_manifest.yaml"
-            )
-        print()
+                f"from overrides/override_manifest.yaml",
+            ]
+        logger.warning("\n".join(lines))
 
 
 def main() -> None:
@@ -141,6 +144,7 @@ def main() -> None:
     argparse.ArgumentParser(
         description="Validate the override manifest and check for stale overrides."
     ).parse_args()
+    setup_logging()
 
     root = Path(__file__).resolve().parent.parent
 
@@ -154,10 +158,10 @@ def main() -> None:
 
         validate(vendor_rules, override_rules, manifest_entries, config, root)
     except (ConfigError, PipelineError) as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        logger.error("Override check failed: {}", exc)
         sys.exit(1)
 
-    print("Override manifest OK.")
+    logger.success("Override manifest OK.")
 
 
 if __name__ == "__main__":

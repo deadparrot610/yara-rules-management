@@ -12,9 +12,12 @@ import re
 import sys
 from pathlib import Path
 
+from loguru import logger
+
 import config_schema
 import corpus
 from corpus import PipelineError
+from logging_setup import setup_logging
 
 
 # ---------------------------------------------------------------------------
@@ -162,35 +165,44 @@ def _coverage_gap_check(
             cleanup.append((identifier, filter_id))
 
     if cleanup:
-        print("REQUIRED ACTION — coverage-gap 'discard' decisions pending manual revision:\n")
+        lines = [
+            "REQUIRED ACTION — coverage-gap 'discard' decisions pending manual revision:",
+            "",
+        ]
         for override_rule, filter_id in cleanup:
-            print(f"  - Revise the filter policy so {override_rule!r} is no longer excluded")
+            lines.append(
+                f"  - Revise the filter policy so {override_rule!r} is no longer excluded"
+            )
             if filter_id:
-                print(f"    (responsible filter: {filter_id})")
-        print()
+                lines.append(f"    (responsible filter: {filter_id})")
+        logger.warning("\n".join(lines))
 
     if blocking:
-        print("COVERAGE GAP CHECKPOINT — build blocked.\n", file=sys.stderr)
-        print(
-            "The following override rules are excluded by a filter, but the vendor rules\n"
-            f"they superseded have already been removed. Record a decision in:\n"
-            f"  {config.coverage_gap_decisions}\n",
-            file=sys.stderr,
-        )
+        lines = [
+            "COVERAGE GAP CHECKPOINT — build blocked.",
+            "",
+            "The following override rules are excluded by a filter, but the vendor rules",
+            "they superseded have already been removed. Record a decision in:",
+            f"  {config.coverage_gap_decisions}",
+            "",
+        ]
         for override_rule, filter_id in blocking:
-            print(f"  override_rule: {override_rule}", file=sys.stderr)
+            lines.append(f"  override_rule: {override_rule}")
             if filter_id:
-                print(f"    responsible filter: {filter_id}", file=sys.stderr)
-            print(f"    → add entry:", file=sys.stderr)
-            print(f"        - override_rule: {override_rule}", file=sys.stderr)
+                lines.append(f"    responsible filter: {filter_id}")
+            lines.append(f"    → add entry:")
+            lines.append(f"        - override_rule: {override_rule}")
             if filter_id:
                 # Include filter_id to scope this decision to one filter.
                 # Omit it to create a wildcard that covers all filters for this override.
-                print(f"          filter_id: {filter_id}", file=sys.stderr)
-            print(f"          decision: keep    # or: discard", file=sys.stderr)
-            print(f"          reviewer: <name>", file=sys.stderr)
-            print(f"          date: <YYYY-MM-DD>", file=sys.stderr)
-            print(file=sys.stderr)
+                lines.append(f"          filter_id: {filter_id}")
+            lines += [
+                f"          decision: keep    # or: discard",
+                f"          reviewer: <name>",
+                f"          date: <YYYY-MM-DD>",
+                "",
+            ]
+        logger.error("\n".join(lines))
         raise PipelineError(
             f"coverage gap checkpoint: {len(blocking)} unresolved entr"
             f"{'y' if len(blocking) == 1 else 'ies'}"
@@ -212,7 +224,7 @@ def _referential_integrity_check(included_rules: list, excluded_ids: set) -> Non
                 )
     if errors:
         for e in errors:
-            print(f"ERROR: {e}", file=sys.stderr)
+            logger.error(e)
         raise PipelineError(
             f"referential integrity: {len(errors)} included rule(s) reference "
             f"excluded rules"
@@ -232,7 +244,7 @@ def _floor_guard(included_count: int, policy) -> None:
         )
         on_empty = policy.on_empty_output
         if on_empty == "warn":
-            print(f"WARNING: {msg}")
+            logger.warning(msg)
         else:
             raise PipelineError(msg)
 
@@ -297,6 +309,7 @@ def main() -> None:
         help="Preview what the current filter policy would include/exclude (default behavior).",
     )
     parser.parse_args()
+    setup_logging()
 
     root = Path(__file__).resolve().parent.parent
 
@@ -324,20 +337,23 @@ def main() -> None:
 
         included, exclusion_record = run(post_strip, policy, root, manifest_entries, config)
     except (ConfigError, PipelineError) as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        logger.error("Filter preview failed: {}", exc)
         sys.exit(1)
 
-    print(f"PREVIEW — filter policy: {root / 'filters' / 'filter_policy.yaml'}")
-    print(f"  default_mode : {policy.default_mode}")
-    print(f"  active filters: {len(policy.filters)}")
-    print(f"  corpus (post-strip): {len(post_strip)} rules")
-    print(f"  included : {len(included)}")
-    print(f"  excluded : {len(exclusion_record)}")
-    if exclusion_record:
-        print()
-        for rec in exclusion_record:
-            fid = rec['filter_id'] or 'default_mode'
-            print(f"  EXCLUDE  {rec['identifier']}  (filter: {fid}, reason: {rec['reason']})")
+    lines = [
+        f"PREVIEW — filter policy: {root / 'filters' / 'filter_policy.yaml'}",
+        f"  default_mode : {policy.default_mode}",
+        f"  active filters: {len(policy.filters)}",
+        f"  corpus (post-strip): {len(post_strip)} rules",
+        f"  included : {len(included)}",
+        f"  excluded : {len(exclusion_record)}",
+    ]
+    for rec in exclusion_record:
+        fid = rec['filter_id'] or 'default_mode'
+        lines.append(
+            f"  EXCLUDE  {rec['identifier']}  (filter: {fid}, reason: {rec['reason']})"
+        )
+    logger.info("\n".join(lines))
 
 
 if __name__ == "__main__":
