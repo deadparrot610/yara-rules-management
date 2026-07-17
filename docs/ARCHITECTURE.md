@@ -187,7 +187,7 @@ For each YARA rule `R` in the post-merge corpus:
 1. `state = default_mode` (included if `include_all`, excluded if `exclude_all`).
 2. Collect all filters whose scope applies to `R` and whose selector matches `R`.
 3. Decide by **scope specificity**: `rule:` (most specific) > ruleset (`vendor`/`custom`/`overrides`) > `global`. The highest-specificity level that has a matching filter determines `R`'s state via that filter's `action`. A more specific filter therefore overrides a less specific one.
-4. **Tie-break** at the same specificity, if both `include` and `exclude` match: apply the configured policy — **exclude-wins** (default), `last_match_wins`, or `error` (fail and require human resolution). [D-8]
+4. **Tie-break** at the same specificity, if both `include` and `exclude` match: **exclude wins**, always. This is a fixed invariant of the engine, not a configurable policy — it fails safe toward a smaller, more deliberate deployment, and keeps the result independent of the order filters appear in the policy file. [D-8]
 
 ### 4.3 Cross-checks (run after the include set is computed)
 - **Coverage-gap guard (FR-22).** If `R` is an override rule, `R` is excluded by the policy, and `R` superseded vendor rules that the merge removed, the corpus now has neither the vendor detection nor its replacement. The pipeline blocks and requires a reviewer decision per the checkpoint mechanism in §4.5.
@@ -262,7 +262,6 @@ external_variables:
   filetype: ""
 stale_override_decisions: overrides/stale_override_decisions.yaml
 coverage_gap_decisions: filters/coverage_gap_decisions.yaml
-filter_conflict_policy: exclude_wins   # exclude_wins | last_match_wins | error
 required_meta: [author, date, description, reference, severity]
 ```
 
@@ -276,7 +275,7 @@ required_meta: [author, date, description, reference, severity]
 
 **`scripts/build_ruleset.py`** is the merge-and-filter engine described in §5.
 
-**`scripts/config_schema.py`** is the typed schema layer for every YAML config file (`build.yaml`, the override manifest, the filter policy, and both decisions files). Each file is parsed into a validated dataclass — checking required keys, types, enum values (`action`, `scope`, `default_mode`, `on_empty_output`, `filter_conflict_policy`, `decision`), and rejecting unknown fields — so malformed config fails fast with a sourced `ConfigError` instead of a downstream traceback. It is a dependency-free leaf module; all other scripts load config through its `load_*` functions, which consolidates what were previously duplicated per-script loaders.
+**`scripts/config_schema.py`** is the typed schema layer for every YAML config file (`build.yaml`, the override manifest, the filter policy, and both decisions files). Each file is parsed into a validated dataclass — checking required keys, types, enum values (`action`, `scope`, `default_mode`, `on_empty_output`, `decision`), and rejecting unknown fields — so malformed config fails fast with a sourced `ConfigError` instead of a downstream traceback. It is a dependency-free leaf module; all other scripts load config through its `load_*` functions, which consolidates what were previously duplicated per-script loaders.
 
 **`tests/test_ruleset.py`** loads the built ruleset, reads `tests/test_cases.yaml`, scans each fixture, asserts expected match/no-match, scans the `clean/` corpus to enforce the false-positive gate, and emits JUnit XML.
 

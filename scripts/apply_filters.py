@@ -113,7 +113,7 @@ def _meta_date_matches(spec, rule) -> bool:
 # Per-rule resolution
 # ---------------------------------------------------------------------------
 
-def _resolve_rule(rule, filters: list, default_mode: str, conflict_policy: str) -> tuple:
+def _resolve_rule(rule, filters: list, default_mode: str) -> tuple:
     """Return (action, responsible_filter | None)."""
     applicable = [
         f for f in filters
@@ -136,23 +136,12 @@ def _resolve_rule(rule, filters: list, default_mode: str, conflict_policy: str) 
     if len(actions) == 1:
         return next(iter(actions)), best[-1]
 
-    # Conflict at the same specificity level — apply tie-break policy.
-    # action values are validated at load (include|exclude), so exclude_wins
-    # always finds an 'exclude' when actions disagree.
-    if conflict_policy == "exclude_wins":
-        for f in reversed(best):
-            if f.action == "exclude":
-                return "exclude", f
-        return best[-1].action, best[-1]
-    elif conflict_policy == "last_match_wins":
-        return best[-1].action, best[-1]
-    else:  # "error"
-        ids = [f.id or "<no-id>" for f in best]
-        raise PipelineError(
-            f"conflicting same-specificity filters for rule {rule.identifier!r}: "
-            f"{ids}. Resolve the conflict or set filter_conflict_policy to exclude_wins "
-            f"or last_match_wins."
-        )
+    # Conflict at the same specificity level — exclude always wins (D-8).
+    # action values are validated at load (include|exclude), so a disagreement
+    # guarantees at least one 'exclude' here.
+    for f in reversed(best):
+        if f.action == "exclude":
+            return "exclude", f
 
 
 # ---------------------------------------------------------------------------
@@ -298,7 +287,6 @@ def run(
     Returns (included_rules, exclusion_record).
     exclusion_record: list of {identifier, filter_id, reason}.
     """
-    conflict_policy = config.filter_conflict_policy
     default_mode = policy.default_mode
     filters = policy.filters
 
@@ -306,7 +294,7 @@ def run(
     exclusion_record = []
 
     for rule in rules:
-        action, responsible = _resolve_rule(rule, filters, default_mode, conflict_policy)
+        action, responsible = _resolve_rule(rule, filters, default_mode)
         if action == "include":
             included.append(rule)
         else:

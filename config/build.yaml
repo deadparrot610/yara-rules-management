@@ -6,5 +6,4 @@ external_variables:
   filetype: ""
 stale_override_decisions: overrides/stale_override_decisions.yaml
 coverage_gap_decisions: filters/coverage_gap_decisions.yaml
-filter_conflict_policy: exclude_wins
 required_meta: [author, date, description, reference, severity]

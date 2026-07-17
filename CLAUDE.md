@@ -33,7 +33,7 @@ YARA rejects duplicate identifiers in a single compilation unit. Overriding a ve
 ### Filter policy
 `filters/filter_policy.yaml` is a **selection layer** on the post-merge corpus. It never edits or deletes source rules — a filtered-out rule stays in the repo. Filters run **after** the override strip; a filter cannot resurrect a superseded rule.
 
-**Resolution:** `rule:<Identifier>` scope > ruleset scope (`vendor`/`custom`/`overrides`) > `global`. Same-specificity tie-break is `exclude_wins` by default (D-8). Default mode is `include_all` (D-9).
+**Resolution:** `rule:<Identifier>` scope > ruleset scope (`vendor`/`custom`/`overrides`) > `global`. Same-specificity conflicts are always resolved exclude-wins (D-8) — a fixed invariant of the filter engine, not a setting. Default mode is `include_all` (D-9).
 
 **Cross-checks that must run after the include set is computed:**
 1. **Coverage-gap guard** — excluding an override rule whose superseded vendor rules were already removed leaves neither detection. Blocks and requires a reviewer keep/discard decision recorded in `filters/coverage_gap_decisions.yaml`; unresolved gaps are always a hard block.
@@ -49,7 +49,7 @@ Parse → load manifest + policy + config → validate overrides → strip super
 A referenced rule must precede the rule that references it. Default emission order: vendor-remainder → overrides → custom. Intra-corpus references trigger topological reordering; a cycle is a compile error.
 
 ### Config is the single source of truth
-`config/build.yaml` holds `output_formats`, `yara_modules`, `external_variables`, `stale_override_decisions`, `coverage_gap_decisions`, `filter_conflict_policy`, and `required_meta`. All scripts (build, lint, test harness) read it — never hardcode these values.
+`config/build.yaml` holds `output_formats`, `yara_modules`, `external_variables`, `stale_override_decisions`, `coverage_gap_decisions`, and `required_meta`. All scripts (build, lint, test harness) read it — never hardcode these values.
 
 ## Open decisions (implement as configurable defaults)
 
@@ -58,12 +58,12 @@ A referenced rule must precede the rule that references it. Default emission ord
 | D-1 | Rule consumer / YARA engine target | **RESOLVED:** Corelight Fleet Manager — modules `pe`, `elf`, `math` (verify `dotnet` before use) |
 | D-5 | Vendor file granularity | **RESOLVED:** multiple `.yara` files in `rules/vendor/`; each update via MR |
 | D-4 | Stale-override policy | **RESOLVED:** manual checkpoint; reviewer keep/discard decision recorded in `overrides/stale_override_decisions.yaml` |
-| D-8 | Same-specificity filter tie-break | **RESOLVED:** `exclude_wins` |
+| D-8 | Same-specificity filter tie-break | **RESOLVED:** exclude wins — fixed in the filter engine, not configurable |
 | D-9 | Filter default mode | **RESOLVED:** `include_all` (denylist) |
 | D-10 | Coverage-gap policy | **RESOLVED:** manual checkpoint; reviewer keep/discard decision recorded in `filters/coverage_gap_decisions.yaml` |
 | D-11 | Single vs. multiple output profiles | **RESOLVED:** single output file; filter engine takes policy as an argument to allow future profiles |
 
-Implement D-8 and D-9 as reads from `config/build.yaml` and `filters/filter_policy.yaml` respectively — not hardcoded — so they can be changed without a code edit.
+Implement D-9 as a read from `filters/filter_policy.yaml` — not hardcoded — so it can be changed without a code edit. D-8 is deliberately the exception: exclude-wins is hardcoded in `scripts/apply_filters.py`, since any other tie-break either makes output depend on filter list order or blocks the pipeline on a conflict the policy already knows how to resolve.
 
 ## Key constraints
 

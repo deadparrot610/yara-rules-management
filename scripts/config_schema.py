@@ -19,7 +19,6 @@ from pathlib import Path
 import yaml
 
 # Enum value sets — kept here as the single source of truth for validation.
-_CONFLICT_POLICIES = {"exclude_wins", "last_match_wins", "error"}
 _DEFAULT_MODES = {"include_all", "exclude_all"}
 _ON_EMPTY = {"fail", "warn"}
 _ACTIONS = {"include", "exclude"}
@@ -130,13 +129,12 @@ class BuildConfig:
     external_variables: dict
     stale_override_decisions: str
     coverage_gap_decisions: str
-    filter_conflict_policy: str
     required_meta: list
 
     _ALLOWED = {
         "output_formats", "yara_modules", "external_variables",
         "stale_override_decisions", "coverage_gap_decisions",
-        "filter_conflict_policy", "required_meta",
+        "required_meta",
     }
 
     @classmethod
@@ -160,9 +158,6 @@ class BuildConfig:
             external_variables=external,
             stale_override_decisions=_require(data, "stale_override_decisions", str, source),
             coverage_gap_decisions=_require(data, "coverage_gap_decisions", str, source),
-            filter_conflict_policy=_enum(
-                _require(data, "filter_conflict_policy", str, source),
-                _CONFLICT_POLICIES, source, "filter_conflict_policy"),
             required_meta=_str_list(
                 _require(data, "required_meta", list, source), source, "required_meta"),
         )

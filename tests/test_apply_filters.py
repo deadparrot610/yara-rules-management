@@ -30,7 +30,6 @@ def _config(coverage_gap_rel="coverage_gap_decisions.yaml") -> BuildConfig:
         external_variables={},
         stale_override_decisions="stale_override_decisions.yaml",
         coverage_gap_decisions=coverage_gap_rel,
-        filter_conflict_policy="exclude_wins",
         required_meta=["author"],
     )
 
@@ -39,14 +38,14 @@ def _config(coverage_gap_rel="coverage_gap_decisions.yaml") -> BuildConfig:
 
 def test_default_include_all_keeps_unmatched():
     rule = make_rule("Foo")
-    action, responsible = apply_filters._resolve_rule(rule, [], "include_all", "exclude_wins")
+    action, responsible = apply_filters._resolve_rule(rule, [], "include_all")
     assert action == "include"
     assert responsible is None
 
 
 def test_default_exclude_all_drops_unmatched():
     rule = make_rule("Foo")
-    action, responsible = apply_filters._resolve_rule(rule, [], "exclude_all", "exclude_wins")
+    action, responsible = apply_filters._resolve_rule(rule, [], "exclude_all")
     assert action == "exclude"
     assert responsible is None
 
@@ -59,7 +58,7 @@ def test_rule_scope_beats_ruleset_scope():
         _filter("exclude", scope="vendor"),
         _filter("include", scope="rule:Foo"),
     ]
-    action, _ = apply_filters._resolve_rule(rule, filters, "include_all", "exclude_wins")
+    action, _ = apply_filters._resolve_rule(rule, filters, "include_all")
     assert action == "include"
 
 
@@ -69,7 +68,7 @@ def test_ruleset_scope_beats_global():
         _filter("exclude", scope="global"),
         _filter("include", scope="vendor"),
     ]
-    action, _ = apply_filters._resolve_rule(rule, filters, "include_all", "exclude_wins")
+    action, _ = apply_filters._resolve_rule(rule, filters, "include_all")
     assert action == "include"
 
 
@@ -81,30 +80,20 @@ def test_exclude_wins_tie_break():
         _filter("include", scope="vendor", fid="inc"),
         _filter("exclude", scope="vendor", fid="exc"),
     ]
-    action, responsible = apply_filters._resolve_rule(rule, filters, "include_all", "exclude_wins")
+    action, responsible = apply_filters._resolve_rule(rule, filters, "include_all")
     assert action == "exclude"
     assert responsible.id == "exc"
 
 
-def test_last_match_wins_tie_break():
+def test_exclude_wins_tie_break_regardless_of_order():
     rule = make_rule("Foo", origin="vendor")
     filters = [
         _filter("exclude", scope="vendor", fid="exc"),
         _filter("include", scope="vendor", fid="inc"),
     ]
-    action, responsible = apply_filters._resolve_rule(rule, filters, "include_all", "last_match_wins")
-    assert action == "include"
-    assert responsible.id == "inc"
-
-
-def test_error_policy_raises_on_conflict():
-    rule = make_rule("Foo", origin="vendor")
-    filters = [
-        _filter("include", scope="vendor", fid="inc"),
-        _filter("exclude", scope="vendor", fid="exc"),
-    ]
-    with pytest.raises(PipelineError, match="conflicting same-specificity"):
-        apply_filters._resolve_rule(rule, filters, "include_all", "error")
+    action, responsible = apply_filters._resolve_rule(rule, filters, "include_all")
+    assert action == "exclude"
+    assert responsible.id == "exc"
 
 
 # --- selector matching -----------------------------------------------------
@@ -112,14 +101,14 @@ def test_error_policy_raises_on_conflict():
 def test_selector_tag_match():
     rule = make_rule("Foo", origin="vendor", tags=["malware"])
     filt = _filter("exclude", scope="global", match=FilterMatch(tags=["malware"]))
-    action, _ = apply_filters._resolve_rule(rule, [filt], "include_all", "exclude_wins")
+    action, _ = apply_filters._resolve_rule(rule, [filt], "include_all")
     assert action == "exclude"
 
 
 def test_selector_tag_non_match_falls_through_to_default():
     rule = make_rule("Foo", origin="vendor", tags=["benign"])
     filt = _filter("exclude", scope="global", match=FilterMatch(tags=["malware"]))
-    action, responsible = apply_filters._resolve_rule(rule, [filt], "include_all", "exclude_wins")
+    action, responsible = apply_filters._resolve_rule(rule, [filt], "include_all")
     assert action == "include"
     assert responsible is None
 
@@ -129,21 +118,21 @@ def test_selector_tag_non_match_falls_through_to_default():
 def test_selector_name_glob_match():
     rule = make_rule("Trojan_Foo", origin="vendor")
     filt = _filter("exclude", match=FilterMatch(name_glob="Trojan_*"))
-    action, _ = apply_filters._resolve_rule(rule, [filt], "include_all", "exclude_wins")
+    action, _ = apply_filters._resolve_rule(rule, [filt], "include_all")
     assert action == "exclude"
 
 
 def test_selector_name_regex_non_match_falls_through():
     rule = make_rule("Benign", origin="vendor")
     filt = _filter("exclude", match=FilterMatch(name_regex=r"^Trojan_"))
-    action, _ = apply_filters._resolve_rule(rule, [filt], "include_all", "exclude_wins")
+    action, _ = apply_filters._resolve_rule(rule, [filt], "include_all")
     assert action == "include"
 
 
 def test_selector_meta_exact_match():
     rule = make_rule("Foo", origin="vendor", meta={"severity": "high"})
     filt = _filter("exclude", match=FilterMatch(meta={"severity": "high"}))
-    action, _ = apply_filters._resolve_rule(rule, [filt], "include_all", "exclude_wins")
+    action, _ = apply_filters._resolve_rule(rule, [filt], "include_all")
     assert action == "exclude"
 
 
@@ -152,7 +141,7 @@ def test_selector_meta_in_membership():
     rule = make_rule("Foo", origin="vendor", meta={"severity": "medium"})
     match = FilterMatch(meta_in={"severity": ["low", "medium"]})
     filt = _filter("exclude", match=match)
-    action, _ = apply_filters._resolve_rule(rule, [filt], "include_all", "exclude_wins")
+    action, _ = apply_filters._resolve_rule(rule, [filt], "include_all")
     assert action == "exclude"
 
 
@@ -160,7 +149,7 @@ def test_selector_meta_in_non_member_falls_through():
     rule = make_rule("Foo", origin="vendor", meta={"severity": "high"})
     match = FilterMatch(meta_in={"severity": ["low", "medium"]})
     filt = _filter("exclude", match=match)
-    action, _ = apply_filters._resolve_rule(rule, [filt], "include_all", "exclude_wins")
+    action, _ = apply_filters._resolve_rule(rule, [filt], "include_all")
     assert action == "include"
 
 
@@ -178,7 +167,7 @@ def _dated(identifier, value):
 def test_meta_date_before_strict_excludes_earlier():
     rule = _dated("Foo", "2026-04-18")
     action, _ = apply_filters._resolve_rule(
-        rule, [_date_filter(before=date(2026, 5, 1))], "include_all", "exclude_wins")
+        rule, [_date_filter(before=date(2026, 5, 1))], "include_all")
     assert action == "exclude"
 
 
@@ -186,28 +175,28 @@ def test_meta_date_before_strict_boundary_does_not_match():
     # A rule exactly on the 'before' bound is NOT earlier, so it falls through.
     rule = _dated("Foo", "2026-05-01")
     action, _ = apply_filters._resolve_rule(
-        rule, [_date_filter(before=date(2026, 5, 1))], "include_all", "exclude_wins")
+        rule, [_date_filter(before=date(2026, 5, 1))], "include_all")
     assert action == "include"
 
 
 def test_meta_date_after_strict_excludes_later():
     rule = _dated("Foo", "2026-07-13")
     action, _ = apply_filters._resolve_rule(
-        rule, [_date_filter(after=date(2026, 7, 1))], "include_all", "exclude_wins")
+        rule, [_date_filter(after=date(2026, 7, 1))], "include_all")
     assert action == "exclude"
 
 
 def test_meta_date_on_or_before_is_inclusive():
     rule = _dated("Foo", "2026-05-01")
     action, _ = apply_filters._resolve_rule(
-        rule, [_date_filter(on_or_before=date(2026, 5, 1))], "include_all", "exclude_wins")
+        rule, [_date_filter(on_or_before=date(2026, 5, 1))], "include_all")
     assert action == "exclude"
 
 
 def test_meta_date_on_or_after_is_inclusive():
     rule = _dated("Foo", "2026-05-01")
     action, _ = apply_filters._resolve_rule(
-        rule, [_date_filter(on_or_after=date(2026, 5, 1))], "include_all", "exclude_wins")
+        rule, [_date_filter(on_or_after=date(2026, 5, 1))], "include_all")
     assert action == "exclude"
 
 
@@ -216,15 +205,15 @@ def test_meta_date_between_selects_only_in_range():
     in_range = _dated("In", "2026-06-06")
     below = _dated("Below", "2026-04-18")
     above = _dated("Above", "2026-07-13")
-    assert apply_filters._resolve_rule(in_range, [filt], "include_all", "exclude_wins")[0] == "exclude"
-    assert apply_filters._resolve_rule(below, [filt], "include_all", "exclude_wins")[0] == "include"
-    assert apply_filters._resolve_rule(above, [filt], "include_all", "exclude_wins")[0] == "include"
+    assert apply_filters._resolve_rule(in_range, [filt], "include_all")[0] == "exclude"
+    assert apply_filters._resolve_rule(below, [filt], "include_all")[0] == "include"
+    assert apply_filters._resolve_rule(above, [filt], "include_all")[0] == "include"
 
 
 def test_meta_date_missing_field_falls_through():
     rule = make_rule("Foo", origin="vendor", meta={"author": "x"})  # no date
     action, responsible = apply_filters._resolve_rule(
-        rule, [_date_filter(before=date(2026, 5, 1))], "include_all", "exclude_wins")
+        rule, [_date_filter(before=date(2026, 5, 1))], "include_all")
     assert action == "include"
     assert responsible is None
 
@@ -233,7 +222,7 @@ def test_meta_date_unparseable_value_raises():
     rule = _dated("Foo", "not-a-date")
     with pytest.raises(PipelineError, match="not a valid YYYY-MM-DD date"):
         apply_filters._resolve_rule(
-            rule, [_date_filter(before=date(2026, 5, 1))], "include_all", "exclude_wins")
+            rule, [_date_filter(before=date(2026, 5, 1))], "include_all")
 
 
 def test_run_meta_date_exclusion_drops_in_range_rules(tmp_path):

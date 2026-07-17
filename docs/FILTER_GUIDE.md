@@ -160,14 +160,10 @@ less specific one. So a `global` include-only allowlist can still be punched thr
 `rule:` exclude for one bad rule.
 
 **Same-specificity tie-break.** If two filters at the *same* specificity match one rule and
-disagree (`include` vs `exclude`), the tie-break comes from `filter_conflict_policy` in
-`config/build.yaml`:
-
-| Policy | Behaviour |
-|---|---|
-| `exclude_wins` | **Default.** Exclude beats include. |
-| `last_match_wins` | The last matching filter in the list wins. |
-| `error` | Hard-fail and require a human to resolve the conflict. |
+disagree (`include` vs `exclude`), **exclude wins** — always, and regardless of the order the two
+filters appear in. This is not configurable. If you need the rule shipped, either remove the
+`exclude` filter or give the `include` a more specific scope (a `rule:` include beats a ruleset
+`exclude`).
 
 ---
 
