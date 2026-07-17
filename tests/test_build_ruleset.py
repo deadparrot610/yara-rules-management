@@ -78,6 +78,26 @@ def test_check_collisions_raises_on_duplicate():
         build_ruleset.check_collisions([a1, a2])
 
 
+# --- config enforcement (module allowlist, output formats) -----------------
+
+def test_check_modules_accepts_allowed_imports():
+    r = make_rule("A", origin="vendor", imports=["pe", "math"])
+    build_ruleset.check_modules([r], ["pe", "elf", "math"])  # no raise
+
+
+def test_check_modules_rejects_unlisted_module():
+    # yara-python would compile dotnet fine; only the allowlist catches it (D-1).
+    r = make_rule("A", origin="custom", imports=["dotnet"])
+    with pytest.raises(PipelineError, match="dotnet"):
+        build_ruleset.check_modules([r], ["pe", "elf", "math"])
+
+
+def test_check_output_formats_source_only():
+    build_ruleset.check_output_formats(["source"])  # no raise
+    with pytest.raises(PipelineError, match="unsupported output_formats"):
+        build_ruleset.check_output_formats(["source", "compiled"])
+
+
 # --- compile validation gate + error attribution ---------------------------
 
 def test_compile_rules_accepts_valid_source():

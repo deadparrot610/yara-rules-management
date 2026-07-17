@@ -8,8 +8,10 @@ Runs before the build as a fast, source-attributed gate (ARCHITECTURE.md §7):
   2. plyara parseability — every file must parse (delegated to corpus.parse).
   3. Required metadata — custom/override rules must carry every field in
      config.required_meta (vendor rules are exempt).
-  4. Naming conventions — rule identifiers must be well-formed.
-  5. Filter policy — schema validity (via config_schema.load_filter_policy) plus
+  4. Module allowlist — every module import must appear in config.yara_modules
+     (the deployment engine supports fewer modules than the compile gate).
+  5. Naming conventions — rule identifiers must be well-formed.
+  6. Filter policy — schema validity (via config_schema.load_filter_policy) plus
      a corpus-aware warning when a rule:/name selector names an absent identifier.
 
 Standalone:  python scripts/lint.py
@@ -106,7 +108,34 @@ def lint_metadata(rules: list, required_meta: list, root: Path) -> list:
 
 
 # ---------------------------------------------------------------------------
-# 3. Naming conventions
+# 3. Module allowlist
+# ---------------------------------------------------------------------------
+
+def lint_modules(rules: list, allowed_modules: list, root: Path) -> list:
+    """Report imports of modules absent from config.yara_modules.
+
+    The deployment engine (D-1: Corelight — pe/elf/math) supports fewer modules
+    than yara-python compiles, so the compile gate cannot catch these; the
+    allowlist in config/build.yaml is authoritative (ARCHITECTURE.md §6).
+    """
+    allowed = set(allowed_modules)
+    errors = []
+    seen: set = set()  # (filepath, module) — imports repeat per rule in a file
+    for rule in rules:
+        for mod in rule.imports:
+            key = (rule.filepath, mod)
+            if mod in allowed or key in seen:
+                continue
+            seen.add(key)
+            errors.append(
+                f"{_rel(rule.filepath, root)}: imports module {mod!r} not in "
+                f"config yara_modules {sorted(allowed)}"
+            )
+    return errors
+
+
+# ---------------------------------------------------------------------------
+# 4. Naming conventions
 # ---------------------------------------------------------------------------
 
 def lint_naming(rules: list, root: Path) -> list:
@@ -133,7 +162,7 @@ def lint_naming(rules: list, root: Path) -> list:
 
 
 # ---------------------------------------------------------------------------
-# 4. Filter policy corpus-aware warnings (schema itself validated at load)
+# 5. Filter policy corpus-aware warnings (schema itself validated at load)
 # ---------------------------------------------------------------------------
 
 def lint_filter_policy(policy, corpus_ids: set) -> list:
@@ -183,6 +212,7 @@ def run_lint(root: Path) -> None:
     errors = []
     errors += lint_syntax(root, corpus_ids, config.external_variables)
     errors += lint_metadata(rules, config.required_meta, root)
+    errors += lint_modules(rules, config.yara_modules, root)
     errors += lint_naming(rules, root)
 
     for w in lint_filter_policy(policy, corpus_ids):

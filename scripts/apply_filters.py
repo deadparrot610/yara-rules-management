@@ -93,11 +93,11 @@ def _meta_date_matches(spec, rule) -> bool:
         return False
     try:
         value = config_schema.parse_iso_date(str(raw))
-    except ValueError:
+    except ValueError as exc:
         raise PipelineError(
             f"rule {rule.identifier!r}: meta field {spec.field!r} value {raw!r} "
             f"is not a valid YYYY-MM-DD date"
-        )
+        ) from exc
     if spec.after is not None and not value > spec.after:
         return False
     if spec.before is not None and not value < spec.before:
@@ -113,7 +113,7 @@ def _meta_date_matches(spec, rule) -> bool:
 # Per-rule resolution
 # ---------------------------------------------------------------------------
 
-def _resolve_rule(rule, filters: list, default_mode: str) -> tuple:
+def _resolve_rule(rule, filters: list, default_mode: str) -> tuple[str, object]:
     """Return (action, responsible_filter | None)."""
     applicable = [
         f for f in filters
@@ -142,6 +142,9 @@ def _resolve_rule(rule, filters: list, default_mode: str) -> tuple:
     for f in reversed(best):
         if f.action == "exclude":
             return "exclude", f
+    raise AssertionError(
+        "unreachable: conflicting same-specificity filters with no 'exclude' action"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -211,16 +214,16 @@ def _coverage_gap_check(
             lines.append(f"  override_rule: {override_rule}")
             if filter_id:
                 lines.append(f"    responsible filter: {filter_id}")
-            lines.append(f"    → add entry:")
+            lines.append("    → add entry:")
             lines.append(f"        - override_rule: {override_rule}")
             if filter_id:
                 # Include filter_id to scope this decision to one filter.
                 # Omit it to create a wildcard that covers all filters for this override.
                 lines.append(f"          filter_id: {filter_id}")
             lines += [
-                f"          decision: keep    # or: discard",
-                f"          reviewer: <name>",
-                f"          date: <YYYY-MM-DD>",
+                "          decision: keep    # or: discard",
+                "          reviewer: <name>",
+                "          date: <YYYY-MM-DD>",
                 "",
             ]
         logger.error("\n".join(lines))
@@ -280,7 +283,7 @@ def run(
     root: Path,
     manifest_entries: list,
     config,
-) -> tuple:
+) -> tuple[list, list[dict]]:
     """Apply the filter policy to the post-strip corpus.
 
     policy is a config_schema.FilterPolicy; config is a config_schema.BuildConfig.

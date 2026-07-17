@@ -1,7 +1,12 @@
-stale_override_decisions:
-  - override_rule: Custom_Override_Placeholder
-    missing_vendor_rule: Vendor_Placeholder
-    decision: keep
-    reason: "Placeholder override kept for pipeline testing"
-    reviewer: fritz
-    date: "2026-06-03"
+# Reviewer keep/discard decisions for stale overrides (see ARCHITECTURE.md §3.3).
+# The build prompts with a ready-to-paste entry when it blocks on a stale override.
+#
+# Example entry:
+#   stale_override_decisions:
+#     - override_rule: Custom_Override_Emotet
+#       missing_vendor_rule: Vendor_Emotet_v3
+#       decision: keep              # keep | discard
+#       reason: "Still catches loaders not covered by v3"
+#       reviewer: a.analyst
+#       date: "2026-06-02"
+stale_override_decisions: []

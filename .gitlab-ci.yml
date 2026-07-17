@@ -55,12 +55,16 @@ build-ci-image:
       echo "{\"auths\":{\"${CI_REGISTRY}\":{\"auth\":\"$(printf '%s:%s' \
         "${CI_REGISTRY_USER}" "${CI_REGISTRY_PASSWORD}" | base64 | tr -d '\n')\"}}}" \
         > /kaniko/.docker/config.json
+  # Push two tags: :latest (the floating alias other pipelines consume) and an
+  # immutable :$CI_COMMIT_SHA so any past image can be identified and re-pinned
+  # or rolled back — :latest alone is mutable and unauditable.
   script:
     - >-
       /kaniko/executor
       --context "$CI_PROJECT_DIR"
       --dockerfile "$CI_PROJECT_DIR/ci/Dockerfile"
       --destination "$CI_REGISTRY_IMAGE/ci:latest"
+      --destination "$CI_REGISTRY_IMAGE/ci:$CI_COMMIT_SHA"
       --cache=true
       --cache-repo "$CI_REGISTRY_IMAGE/ci/cache"
 
@@ -77,6 +81,7 @@ lint:
     - job: build-ci-image
       optional: true
   script:
+    - ruff check scripts/ tests/
     - python scripts/lint.py
 
 build:

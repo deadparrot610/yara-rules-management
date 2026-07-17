@@ -46,11 +46,16 @@ def make_rule(
 
 @pytest.fixture(scope="session")
 def built():
-    """Run the full build once and expose the emitted dist/ artifacts.
+    """Expose the built dist/ artifacts, building only when they are absent.
 
-    Mirrors CI (build once → test the artifacts) rather than re-building inline
-    per test. Yields (merged_source_path, manifest_path).
+    In CI the build stage hands dist/ forward as job artifacts and the test
+    stage must validate exactly those files (CLAUDE.md: never re-build inline).
+    Locally, fall back to one build when dist/ hasn't been produced yet.
+    Yields (merged_source_path, manifest_path).
     """
-    build_ruleset._build(ROOT)
     dist = ROOT / "dist"
-    return dist / "merged_rules.yara", dist / "build_manifest.json"
+    merged = dist / "merged_rules.yara"
+    manifest = dist / "build_manifest.json"
+    if not (merged.exists() and manifest.exists()):
+        build_ruleset.build(ROOT)
+    return merged, manifest

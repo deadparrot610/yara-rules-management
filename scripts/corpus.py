@@ -24,12 +24,12 @@ class PipelineError(Exception):
 @dataclass
 class RuleRecord:
     identifier: str
-    raw_text: str          # verbatim source extracted from the file
-    tags: list
-    meta: dict             # flattened {key: value}
-    condition_terms: list  # plyara tokens; used for dependency detection
-    imports: list          # module imports declared in the source file
-    origin: str            # 'vendor' | 'custom' | 'overrides'
+    raw_text: str                # verbatim source extracted from the file
+    tags: list[str]
+    meta: dict[str, object]      # flattened {key: value}
+    condition_terms: list[str]   # plyara tokens; used for dependency detection
+    imports: list[str]           # module imports declared in the source file
+    origin: str                  # 'vendor' | 'custom' | 'overrides'
     filepath: Path
 
 
@@ -40,19 +40,19 @@ class Corpus:
     Bundles what every entrypoint needs after discovery+parse so build,
     override-check, and filter scripts share one loader (see load_corpus).
     """
-    vendor_rules: list
-    override_rules: list
-    custom_rules: list
-    vendor_paths: list
+    vendor_rules: list[RuleRecord]
+    override_rules: list[RuleRecord]
+    custom_rules: list[RuleRecord]
+    vendor_paths: list[Path]
     override_path: Path
-    custom_paths: list
+    custom_paths: list[Path]
 
     @property
-    def all_rules(self) -> list:
+    def all_rules(self) -> list[RuleRecord]:
         return self.vendor_rules + self.override_rules + self.custom_rules
 
     @property
-    def source_files(self) -> list:
+    def source_files(self) -> list[Path]:
         return self.vendor_paths + [self.override_path] + self.custom_paths
 
 
@@ -60,7 +60,7 @@ class Corpus:
 # Source discovery
 # ---------------------------------------------------------------------------
 
-def discover_sources(root: Path) -> tuple:
+def discover_sources(root: Path) -> tuple[list[Path], Path, list[Path]]:
     """Return (vendor_paths, override_path, custom_paths) for the rule corpus."""
     vendor_paths = sorted((root / "rules" / "vendor").glob("*.yara"))
     override_path = root / "rules" / "overrides" / "overrides.yara"
@@ -72,7 +72,7 @@ def discover_sources(root: Path) -> tuple:
 # Parsing
 # ---------------------------------------------------------------------------
 
-def _extract_raw_by_line(source: str, parsed_rules: list) -> dict:
+def _extract_raw_by_line(source: str, parsed_rules: list[dict]) -> dict[str, str]:
     """Return {rule_name: raw_text} using plyara's start_line/stop_line."""
     lines = source.splitlines(keepends=True)
     result = {}
@@ -84,9 +84,9 @@ def _extract_raw_by_line(source: str, parsed_rules: list) -> dict:
     return result
 
 
-def parse_yara_files(paths: list, origin: str) -> list:
+def parse_yara_files(paths: list[Path], origin: str) -> list[RuleRecord]:
     """Parse .yara files; return a list of RuleRecord."""
-    records = []
+    records: list[RuleRecord] = []
     # Re-sort defensively: callers normally pass sorted paths (discover_sources),
     # but sorting here guarantees deterministic rule order regardless of caller.
     for path in sorted(Path(p) for p in paths):
@@ -97,7 +97,7 @@ def parse_yara_files(paths: list, origin: str) -> list:
         try:
             parsed = parser.parse_string(source)
         except Exception as exc:
-            raise PipelineError(f"failed to parse {path}: {exc}")
+            raise PipelineError(f"failed to parse {path}: {exc}") from exc
 
         if not parsed:
             continue
@@ -155,7 +155,9 @@ def load_corpus(root: Path) -> Corpus:
 # Override strip
 # ---------------------------------------------------------------------------
 
-def strip_superseded(vendor_rules: list, manifest: list) -> tuple:
+def strip_superseded(
+    vendor_rules: list[RuleRecord], manifest: list,
+) -> tuple[list[RuleRecord], list[str]]:
     """Remove vendor rules declared as superseded in the manifest.
 
     Returns (remaining_vendor_rules, sorted_list_of_removed_identifiers).

@@ -59,10 +59,13 @@ yara-rules/
 │   ├── filter_policy.yaml              # declarative include/exclude selection layer
 │   └── coverage_gap_decisions.yaml     # reviewer keep/discard decisions for coverage gaps
 ├── scripts/
-│   ├── build_ruleset.py        # parse → strip → merge → filter → order → compile → manifest
-│   ├── lint.py                 # per-file syntax + metadata schema + filter-policy validation
+│   ├── build_ruleset.py        # parse → strip → collision/module checks → filter → order → compile → emit → manifest
+│   ├── lint.py                 # per-file syntax + metadata + module allowlist + filter-policy validation
 │   ├── check_overrides.py      # stale-override / conflict detection
-│   └── apply_filters.py        # filter resolution + cross-checks (usable standalone)
+│   ├── apply_filters.py        # filter resolution + cross-checks (usable standalone)
+│   ├── config_schema.py        # typed schema layer for every YAML config file
+│   ├── corpus.py               # shared rule model, parser, discovery, override strip
+│   └── logging_setup.py        # central loguru configuration (CI-friendly streams)
 ├── tests/
 │   ├── samples/                # INERT/synthetic fixtures only (see §9)
 │   ├── clean/                  # benign corpus for the false-positive gate
@@ -236,19 +239,20 @@ Sequence:
 2. **Load** `overrides/override_manifest.yaml`, `filters/filter_policy.yaml`, and `config/build.yaml`.
 3. **Validate overrides** via the manifest rules in §3.2–§3.3 (delegates to `check_overrides.py`). Block on any stale entry with no recorded decision in `overrides/stale_override_decisions.yaml`; apply recorded decisions automatically.
 4. **Strip** every superseded identifier from the parsed vendor set (override merge).
-5. **Apply the filter policy** via `apply_filters.py` (§4.2), producing the included set and the exclusion record.
-6. **Run filter cross-checks** (§4.3): coverage-gap (reads `filters/coverage_gap_decisions.yaml`, blocks on unresolved gaps), referential integrity, empty/floor guards.
-7. **Detect residual collisions** — any identifier appearing in more than one source after stripping/filtering is an error (e.g. a custom rule accidentally reusing a vendor name without an override declaration).
-8. **Order** the emitted rules so dependencies resolve (see §6): vendor-remainder → overrides → custom, with topological adjustment if intra-set references exist.
-9. **Emit** `dist/merged_rules.yara` (source) and/or compile to `dist/merged_rules.yarc` per configured formats. (Current deployment emits source only; D-2.)
-10. **Compile** the merged-and-filtered corpus with `yara-python` as the authoritative validation gate (FR-7). Compilation here is non-negotiable even when only source output is requested — it is how "the ruleset is valid" is proven.
-11. **Write** `dist/build_manifest.json`: rule counts by source, overridden/removed vendor identifiers, **filtered-out rules with responsible filter id and reason**, per-source-file SHA-256, tool/engine versions, and build version.
+5. **Detect collisions** on the post-strip corpus — any identifier appearing in more than one source is an error (e.g. a custom rule accidentally reusing a vendor name without an override declaration). This runs *before* filtering: a duplicate is a source defect even if a filter would exclude one copy, and duplicate identifiers make identifier-keyed filter resolution ambiguous.
+6. **Enforce the module allowlist** — every module imported anywhere in the post-strip corpus must appear in `yara_modules` (`config/build.yaml`). The compile gate in step 10 cannot catch this: yara-python supports more modules than the deployment engine (§6).
+7. **Apply the filter policy** via `apply_filters.py` (§4.2), producing the included set and the exclusion record.
+8. **Run filter cross-checks** (§4.3): coverage-gap (reads `filters/coverage_gap_decisions.yaml`, blocks on unresolved gaps), referential integrity, empty/floor guards.
+9. **Order** the emitted rules so dependencies resolve (see §6): vendor-remainder → overrides → custom, with topological adjustment if intra-set references exist.
+10. **Compile** the merged-and-filtered corpus (as an in-memory string) with `yara-python` as the authoritative validation gate (FR-7). Compilation is non-negotiable even when only source output is requested — it is how "the ruleset is valid" is proven, and it runs before anything is written to `dist/` so no unvalidated artifact ever exists on disk.
+11. **Emit** `dist/merged_rules.yara` (source only; D-2 — `output_formats` values other than `source` are rejected at the start of the build).
+12. **Write** `dist/build_manifest.json`: rule counts by source, overridden/removed vendor identifiers, **filtered-out rules with responsible filter id and reason**, per-source-file SHA-256, tool/engine versions, and build version.
 
 ## 6. Rule ordering, modules, and external variables
 
 **Ordering.** YARA conditions may reference other rules (including private rules), and a referenced rule must be defined earlier in the unit. The default emission order assumes custom/override rules may reference vendor rules but not vice versa. Where intra-corpus references exist, the build orders topologically; a cycle or unresolved reference surfaces as a compile error in §5 step 10, which is the backstop.
 
-**Modules.** Any module imported by the ruleset must be supported by both the CI build image and the deployment engine, or compilation/scan fails. The authoritative module list lives in `config/build.yaml` and the CI image is built to satisfy it. For the current Corelight Fleet Manager deployment (D-1): `pe`, `elf`, and `math` are supported; verify `dotnet` support before use.
+**Modules.** Any module imported by the ruleset must be supported by both the CI build image and the deployment engine, or compilation/scan fails. The authoritative module list lives in `config/build.yaml` (`yara_modules`) and is **enforced**: lint and the build both reject any import outside the list, because yara-python compiles modules the deployment engine may lack, so the compile gate alone cannot catch them. For the current Corelight Fleet Manager deployment (D-1): `pe`, `elf`, and `math` are supported; verify `dotnet` support before adding it to the list.
 
 **External variables.** Rules using externals (`filename`, `filepath`, `filetype`, custom externals) require those declared at compile time and supplied at scan time. They are declared once in `config/build.yaml` and consumed by the build, the test harness, and documented for the deployment target.
 
@@ -267,7 +271,7 @@ required_meta: [author, date, description, reference, severity]
 
 ## 7. Components
 
-**`scripts/lint.py`** compiles each `.yara` file individually (fast, source-attributed syntax failure), confirms `plyara` can parse it, validates that every rule carries the metadata named in `required_meta` plus naming conventions, and validates the **filter policy schema** (well-formed scopes/actions/selectors; warns when a `rule:` scope or exact `name` selector references an identifier not present in the corpus). Runs in the lint stage.
+**`scripts/lint.py`** compiles each `.yara` file individually (fast, source-attributed syntax failure), confirms `plyara` can parse it, validates that every **custom and override** rule carries the metadata named in `required_meta` (vendor rules are committed as received and exempt), enforces naming conventions and the `yara_modules` import allowlist, and validates the **filter policy schema** (well-formed scopes/actions/selectors; warns when a `rule:` scope or exact `name` selector references an identifier not present in the corpus). Runs in the lint stage.
 
 **`scripts/check_overrides.py`** implements the manifest validation in §3.2–§3.3: detects stale and ambiguous override entries, reads `overrides/stale_override_decisions.yaml` to apply recorded reviewer decisions, and blocks on any unresolved stale entry. Runnable standalone (useful immediately after a vendor file update, before merging).
 

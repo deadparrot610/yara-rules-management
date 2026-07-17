@@ -114,12 +114,12 @@ def validate(
             lines += [
                 f"  override_rule: {override_rule}",
                 f"    missing vendor rule: {vendor_id}",
-                f"    → add entry:",
+                "    → add entry:",
                 f"        - override_rule: {override_rule}",
                 f"          missing_vendor_rule: {vendor_id}",
-                f"          decision: keep    # or: discard",
-                f"          reviewer: <name>",
-                f"          date: <YYYY-MM-DD>",
+                "          decision: keep    # or: discard",
+                "          reviewer: <name>",
+                "          date: <YYYY-MM-DD>",
                 "",
             ]
         logger.error("\n".join(lines))

@@ -1,4 +1,4 @@
-"""Tests for the lint stage (Phase 4): syntax, metadata, naming, filter policy."""
+"""Tests for the lint stage (Phase 4): syntax, metadata, modules, naming, filter policy."""
 
 from pathlib import Path
 
@@ -71,6 +71,29 @@ def test_bad_identifiers_error(ident):
 def test_good_identifiers_pass(ident):
     rule = make_rule(ident, origin="custom")
     assert lint.lint_naming([rule], REPO) == []
+
+
+# --- module allowlist ------------------------------------------------------
+
+def test_unlisted_module_import_errors():
+    rule = make_rule("uses_dotnet", origin="custom", imports=["dotnet"])
+    errors = lint.lint_modules([rule], ["pe", "elf", "math"], REPO)
+    assert len(errors) == 1
+    assert "dotnet" in errors[0]
+
+
+def test_allowed_module_imports_pass():
+    rule = make_rule("uses_pe", origin="vendor", imports=["pe", "math"])
+    assert lint.lint_modules([rule], ["pe", "elf", "math"], REPO) == []
+
+
+def test_unlisted_module_reported_once_per_file():
+    # plyara attributes file-level imports to every rule in the file; the error
+    # must not repeat per rule.
+    a = make_rule("A", origin="custom", imports=["dotnet"], filepath=Path("f.yara"))
+    b = make_rule("B", origin="custom", imports=["dotnet"], filepath=Path("f.yara"))
+    errors = lint.lint_modules([a, b], ["pe"], REPO)
+    assert len(errors) == 1
 
 
 # --- syntax (per-file compile) --------------------------------------------
