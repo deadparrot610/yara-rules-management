@@ -26,7 +26,10 @@ import config_schema
 import check_overrides
 import apply_filters
 from config_schema import ConfigError
-from corpus import PipelineError, RuleRecord, strip_superseded, load_corpus
+from corpus import (
+    PipelineError, RuleRecord, strip_superseded, load_corpus,
+    find_collision, module_offenders,
+)
 from logging_setup import setup_logging
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -62,17 +65,16 @@ def check_collisions(rules: list[RuleRecord]) -> None:
 
     Runs on the post-strip corpus *before* filtering: a duplicate identifier is a
     source defect (and makes identifier-keyed filter resolution ambiguous), so it
-    must fail even when a filter would exclude one of the copies.
+    must fail even when a filter would exclude one of the copies. Detection logic
+    lives in corpus.find_collision so the lint gate shares it.
     """
-    seen: dict[str, RuleRecord] = {}
-    for rule in rules:
-        if rule.identifier in seen:
-            prev = seen[rule.identifier]
-            raise PipelineError(
-                f"duplicate identifier {rule.identifier!r} "
-                f"in {rule.filepath} and {prev.filepath}"
-            )
-        seen[rule.identifier] = rule
+    collision = find_collision(rules)
+    if collision is not None:
+        prev, dup = collision
+        raise PipelineError(
+            f"duplicate identifier {dup.identifier!r} "
+            f"in {dup.filepath} and {prev.filepath}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -84,21 +86,19 @@ def check_modules(rules: list[RuleRecord], allowed_modules: list[str]) -> None:
 
     yara-python compiles more modules than the deployment engine supports
     (D-1: Corelight ships pe/elf/math), so the compile gate cannot catch an
-    unsupported import — this allowlist is the only guard.
+    unsupported import — this allowlist is the only guard. Offender detection
+    lives in corpus.module_offenders so the lint gate shares it.
     """
-    allowed = set(allowed_modules)
-    offenders: dict[str, set[str]] = {}
-    for rule in rules:
-        for mod in rule.imports:
-            if mod not in allowed:
-                offenders.setdefault(mod, set()).add(str(rule.filepath))
-    if offenders:
+    by_module: dict[str, set[str]] = {}
+    for path, mod in module_offenders(rules, allowed_modules):
+        by_module.setdefault(mod, set()).add(str(path))
+    if by_module:
         details = "; ".join(
             f"module {mod!r} imported in {', '.join(sorted(paths))}"
-            for mod, paths in sorted(offenders.items())
+            for mod, paths in sorted(by_module.items())
         )
         raise PipelineError(
-            f"module(s) not in config yara_modules {sorted(allowed)}: {details}"
+            f"module(s) not in config yara_modules {sorted(allowed_modules)}: {details}"
         )
 
 

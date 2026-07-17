@@ -152,6 +152,52 @@ def load_corpus(root: Path) -> Corpus:
 
 
 # ---------------------------------------------------------------------------
+# Corpus checks (shared by the lint and build gates)
+# ---------------------------------------------------------------------------
+
+def find_collision(rules: list[RuleRecord]) -> tuple[RuleRecord, RuleRecord] | None:
+    """Return the first (previous, duplicate) pair sharing an identifier, or None.
+
+    YARA rejects duplicate identifiers in one compilation unit, and a duplicate
+    also makes identifier-keyed filter resolution ambiguous. The single definition
+    of "an identifier collision" shared by the lint gate (scripts/lint.py) and the
+    build gate (scripts/build_ruleset.py); run it on the post-strip corpus so an
+    override that reuses a superseded vendor identifier is not a false positive.
+    """
+    seen: dict[str, RuleRecord] = {}
+    for rule in rules:
+        if rule.identifier in seen:
+            return seen[rule.identifier], rule
+        seen[rule.identifier] = rule
+    return None
+
+
+def module_offenders(
+    rules: list[RuleRecord], allowed_modules: list[str],
+) -> list[tuple[Path, str]]:
+    """Return the (filepath, module) pairs importing a module outside the allowlist.
+
+    Deduplicated per (filepath, module) — plyara attributes a file's imports to
+    every rule in that file — and returned in first-seen (deterministic) order.
+    The single definition of "an import outside config.yara_modules" shared by the
+    lint gate (scripts/lint.py) and the build gate (scripts/build_ruleset.py); the
+    deployment engine supports fewer modules than the compile gate, so this is the
+    only guard against an unsupported import.
+    """
+    allowed = set(allowed_modules)
+    offenders: list[tuple[Path, str]] = []
+    seen: set[tuple[Path, str]] = set()
+    for rule in rules:
+        for mod in rule.imports:
+            key = (rule.filepath, mod)
+            if mod in allowed or key in seen:
+                continue
+            seen.add(key)
+            offenders.append(key)
+    return offenders
+
+
+# ---------------------------------------------------------------------------
 # Override strip
 # ---------------------------------------------------------------------------
 

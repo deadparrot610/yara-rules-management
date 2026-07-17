@@ -116,22 +116,36 @@ def lint_modules(rules: list, allowed_modules: list, root: Path) -> list:
 
     The deployment engine (D-1: Corelight — pe/elf/math) supports fewer modules
     than yara-python compiles, so the compile gate cannot catch these; the
-    allowlist in config/build.yaml is authoritative (ARCHITECTURE.md §6).
+    allowlist in config/build.yaml is authoritative (ARCHITECTURE.md §6). Offender
+    detection is shared with the build gate (corpus.module_offenders).
     """
-    allowed = set(allowed_modules)
-    errors = []
-    seen: set = set()  # (filepath, module) — imports repeat per rule in a file
-    for rule in rules:
-        for mod in rule.imports:
-            key = (rule.filepath, mod)
-            if mod in allowed or key in seen:
-                continue
-            seen.add(key)
-            errors.append(
-                f"{_rel(rule.filepath, root)}: imports module {mod!r} not in "
-                f"config yara_modules {sorted(allowed)}"
-            )
-    return errors
+    allowed = sorted(set(allowed_modules))
+    return [
+        f"{_rel(path, root)}: imports module {mod!r} not in "
+        f"config yara_modules {allowed}"
+        for path, mod in corpus.module_offenders(rules, allowed_modules)
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Identifier collisions
+# ---------------------------------------------------------------------------
+
+def lint_collisions(post_strip: list, root: Path) -> list:
+    """Report a duplicate identifier in the post-strip corpus (shared with build).
+
+    Run on the post-strip corpus so an override that reuses a superseded vendor
+    identifier is not a false positive; catching it here surfaces the defect at
+    the fast lint gate instead of only at the slower build compile.
+    """
+    collision = corpus.find_collision(post_strip)
+    if collision is None:
+        return []
+    prev, dup = collision
+    return [
+        f"{_rel(dup.filepath, root)}: duplicate identifier {dup.identifier!r} "
+        f"(also in {_rel(prev.filepath, root)})"
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -204,15 +218,22 @@ def run_lint(root: Path) -> None:
     """
     config = config_schema.load_build_config(root)
     policy = config_schema.load_filter_policy(root)
+    manifest_entries = config_schema.load_override_manifest(root)
     corpus_data = corpus.load_corpus(root)
 
     rules = corpus_data.all_rules
     corpus_ids = {r.identifier for r in rules}
 
+    # Collisions are checked on the post-strip corpus (build's collision gate),
+    # so an override reusing a superseded vendor identifier is not a false positive.
+    vendor_remainder, _ = corpus.strip_superseded(corpus_data.vendor_rules, manifest_entries)
+    post_strip = vendor_remainder + corpus_data.override_rules + corpus_data.custom_rules
+
     errors = []
     errors += lint_syntax(root, corpus_ids, config.external_variables)
     errors += lint_metadata(rules, config.required_meta, root)
     errors += lint_modules(rules, config.yara_modules, root)
+    errors += lint_collisions(post_strip, root)
     errors += lint_naming(rules, root)
 
     for w in lint_filter_policy(policy, corpus_ids):

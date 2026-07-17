@@ -51,6 +51,33 @@ def test_strip_superseded_ignores_absent_ids():
     assert [r.identifier for r in remaining] == ["keep_me"]
 
 
+def test_find_collision_returns_none_when_unique():
+    rules = [make_rule("A"), make_rule("B"), make_rule("C")]
+    assert corpus.find_collision(rules) is None
+
+
+def test_find_collision_returns_prev_and_dup_in_order():
+    first = make_rule("Dup", filepath=None)
+    second = make_rule("Other")
+    third = make_rule("Dup")
+    prev, dup = corpus.find_collision([first, second, third])
+    assert prev is first and dup is third
+
+
+def test_module_offenders_flags_unlisted_only():
+    from pathlib import Path
+    a = make_rule("A", imports=["pe", "dotnet"], filepath=Path("f.yara"))
+    offenders = corpus.module_offenders([a], ["pe", "elf", "math"])
+    assert offenders == [(Path("f.yara"), "dotnet")]
+
+
+def test_module_offenders_dedups_per_file_and_module():
+    from pathlib import Path
+    a = make_rule("A", imports=["dotnet"], filepath=Path("f.yara"))
+    b = make_rule("B", imports=["dotnet"], filepath=Path("f.yara"))
+    assert corpus.module_offenders([a, b], ["pe"]) == [(Path("f.yara"), "dotnet")]
+
+
 def test_strip_superseded_against_real_manifest(root):
     c = corpus.load_corpus(root)
     manifest = [OverrideEntry(override_rule="vendor_override_overridden",

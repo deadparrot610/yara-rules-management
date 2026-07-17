@@ -9,9 +9,23 @@ from pathlib import Path
 import pytest
 
 import build_ruleset
+import corpus
 from corpus import RuleRecord
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+def _inputs_newer_than(artifact: Path) -> bool:
+    """True if any build input is newer than artifact (i.e. artifact is stale)."""
+    art_mtime = artifact.stat().st_mtime
+    vendor_paths, override_path, custom_paths = corpus.discover_sources(ROOT)
+    inputs = [
+        *vendor_paths, override_path, *custom_paths,
+        ROOT / "config" / "build.yaml",
+        ROOT / "filters" / "filter_policy.yaml",
+        ROOT / "overrides" / "override_manifest.yaml",
+    ]
+    return any(p.exists() and p.stat().st_mtime > art_mtime for p in inputs)
 
 
 @pytest.fixture
@@ -46,16 +60,18 @@ def make_rule(
 
 @pytest.fixture(scope="session")
 def built():
-    """Expose the built dist/ artifacts, building only when they are absent.
+    """Expose the built dist/ artifacts, building when they are absent or stale.
 
     In CI the build stage hands dist/ forward as job artifacts and the test
-    stage must validate exactly those files (CLAUDE.md: never re-build inline).
-    Locally, fall back to one build when dist/ hasn't been produced yet.
+    stage must validate exactly those files (CLAUDE.md: never re-build inline);
+    those artifacts are always fresh. Locally, build when dist/ hasn't been
+    produced yet, or rebuild when a source input is newer than the artifacts so
+    a leftover dist/ from a prior run is never validated against edited sources.
     Yields (merged_source_path, manifest_path).
     """
     dist = ROOT / "dist"
     merged = dist / "merged_rules.yara"
     manifest = dist / "build_manifest.json"
-    if not (merged.exists() and manifest.exists()):
+    if not (merged.exists() and manifest.exists()) or _inputs_newer_than(merged):
         build_ruleset.build(ROOT)
     return merged, manifest

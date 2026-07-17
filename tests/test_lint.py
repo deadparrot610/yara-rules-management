@@ -96,6 +96,22 @@ def test_unlisted_module_reported_once_per_file():
     assert len(errors) == 1
 
 
+# --- identifier collisions -------------------------------------------------
+
+def test_lint_collisions_flags_duplicate():
+    a = make_rule("Dup", origin="custom", filepath=Path("a.yara"))
+    b = make_rule("Dup", origin="custom", filepath=Path("b.yara"))
+    errors = lint.lint_collisions([a, b], REPO)
+    assert len(errors) == 1
+    assert "Dup" in errors[0]
+
+
+def test_lint_collisions_clean_when_unique():
+    a = make_rule("A", origin="custom")
+    b = make_rule("B", origin="custom")
+    assert lint.lint_collisions([a, b], REPO) == []
+
+
 # --- syntax (per-file compile) --------------------------------------------
 
 def test_syntax_error_attributed_to_file(tmp_path):
