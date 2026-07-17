@@ -20,7 +20,6 @@ SRC = "test-source"
 
 def test_build_config_real_file(root):
     cfg = config_schema.load_build_config(root)
-    assert cfg.filter_conflict_policy == "exclude_wins"
     assert cfg.required_meta == ["author", "date", "description", "reference", "severity"]
     assert cfg.stale_override_decisions == "overrides/stale_override_decisions.yaml"
     assert cfg.coverage_gap_decisions == "filters/coverage_gap_decisions.yaml"
@@ -53,7 +52,6 @@ def _valid_build_dict():
         "external_variables": {"filename": ""},
         "stale_override_decisions": "a.yaml",
         "coverage_gap_decisions": "b.yaml",
-        "filter_conflict_policy": "exclude_wins",
         "required_meta": ["author"],
     }
 
@@ -69,13 +67,6 @@ def test_build_config_wrong_type():
     data = _valid_build_dict()
     data["output_formats"] = "source"  # should be a list
     with pytest.raises(ConfigError, match="must be a list"):
-        BuildConfig.from_dict(data, SRC)
-
-
-def test_build_config_bad_enum():
-    data = _valid_build_dict()
-    data["filter_conflict_policy"] = "coin_flip"
-    with pytest.raises(ConfigError, match="filter_conflict_policy"):
         BuildConfig.from_dict(data, SRC)
 
 

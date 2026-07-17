@@ -21,7 +21,6 @@ def _config(decisions_rel="stale_override_decisions.yaml") -> BuildConfig:
         external_variables={},
         stale_override_decisions=decisions_rel,
         coverage_gap_decisions="coverage_gap_decisions.yaml",
-        filter_conflict_policy="exclude_wins",
         required_meta=["author"],
     )
 
