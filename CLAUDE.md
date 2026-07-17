@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-**Initial development.** Design documents are complete; code does not yet exist. Build scripts, configs, vendor file, and test fixtures must be created per the implementation plan. See `docs/IMPLEMENTATION_PLAN.md` for the phased build order and definition of done per phase.
+**Built through Phase 7** (scaffold, merge engine, override validation, filter engine, lint, test harness, GitLab CI/CD, packaging/releases). Phase 8 (PCAP testing job) is deferred pending D-3; D-6 (sample sourcing) is also still open. See `docs/IMPLEMENTATION_PLAN.md` for the phase definitions.
 
 ## Commands
 
@@ -13,6 +13,7 @@ pip install -r requirements.txt          # plyara, yara-python, pytest, pyyaml
 
 python scripts/build_ruleset.py          # build dist/ artifacts
 python scripts/lint.py                   # lint all rule files + filter policy
+ruff check scripts/ tests/               # lint the pipeline's Python (also runs in CI)
 python scripts/check_overrides.py        # validate override manifest standalone
 python scripts/apply_filters.py --preview  # preview filter effect without building
 pytest tests/                            # run test suite against built ruleset
@@ -41,9 +42,9 @@ YARA rejects duplicate identifiers in a single compilation unit. Overriding a ve
 3. **Empty/below-floor guard** — output below `min_output_rules` triggers `on_empty_output` policy.
 
 ### Build sequence (`scripts/build_ruleset.py`)
-Parse → load manifest + policy + config → validate overrides → strip superseded vendor rules → apply filter policy → run cross-checks → collision check → topological order → emit source → compile (authoritative validation gate) → write manifest.
+Parse → load manifest + policy + config → validate overrides → strip superseded vendor rules → collision check → module-allowlist check → apply filter policy → run cross-checks → topological order → compile (authoritative validation gate) → emit source → write manifest.
 
-**The compile step is the validation authority.** Never emit an artifact that hasn't compiled. The compile is non-negotiable even when only source output is requested.
+**The compile step is the validation authority.** It runs against the in-memory merged source *before* anything is written to `dist/` — never emit an artifact that hasn't compiled. The compile is non-negotiable even when only source output is requested. The compile gate cannot catch modules the deployment engine lacks (yara-python supports more than Corelight), so every import must also pass the `yara_modules` allowlist from `config/build.yaml` (enforced in lint and build).
 
 ### Rule ordering invariant
 A referenced rule must precede the rule that references it. Default emission order: vendor-remainder → overrides → custom. Intra-corpus references trigger topological reordering; a cycle is a compile error.
@@ -75,4 +76,4 @@ Implement D-9 as a read from `filters/filter_policy.yaml` — not hardcoded — 
 
 ## Required metadata fields for custom/override rules
 
-Every rule must carry: `author`, `date`, `description`, `reference`, `severity`. Lint rejects rules missing any of these (`required_meta` in `config/build.yaml`).
+Every **custom and override** rule must carry: `author`, `date`, `description`, `reference`, `severity`. Lint rejects rules missing any of these (`required_meta` in `config/build.yaml`). Vendor rules are exempt — they are committed as received.

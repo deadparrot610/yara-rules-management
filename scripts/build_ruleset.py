@@ -3,8 +3,8 @@
 Build the merged YARA ruleset.
 
 Build sequence: parse → validate overrides (check_overrides) → strip superseded
-vendor rules → apply filter policy (apply_filters) → collision check →
-topological order → emit source → compile (validation gate) → write manifest.
+vendor rules → collision check → apply filter policy (apply_filters) →
+topological order → compile (validation gate) → emit source → write manifest.
 """
 
 import os
@@ -26,7 +26,10 @@ import config_schema
 import check_overrides
 import apply_filters
 from config_schema import ConfigError
-from corpus import PipelineError, strip_superseded, load_corpus
+from corpus import (
+    PipelineError, RuleRecord, strip_superseded, load_corpus,
+    find_collision, module_offenders,
+)
 from logging_setup import setup_logging
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -43,7 +46,7 @@ def load_config(root: Path):
     return config_schema.load_build_config(root)
 
 
-def load_manifest(root: Path) -> list:
+def load_manifest(root: Path) -> list[config_schema.OverrideEntry]:
     """Return the validated override manifest as a list of OverrideEntry."""
     return config_schema.load_override_manifest(root)
 
@@ -57,24 +60,63 @@ def load_filter_policy(root: Path):
 # Collision check
 # ---------------------------------------------------------------------------
 
-def check_collisions(rules: list) -> None:
-    """Hard-error on duplicate identifiers in the merged corpus."""
-    seen = {}
-    for rule in rules:
-        if rule.identifier in seen:
-            prev = seen[rule.identifier]
-            raise PipelineError(
-                f"duplicate identifier {rule.identifier!r} "
-                f"in {rule.filepath} and {prev.filepath}"
-            )
-        seen[rule.identifier] = rule
+def check_collisions(rules: list[RuleRecord]) -> None:
+    """Hard-error on duplicate identifiers in the merged corpus.
+
+    Runs on the post-strip corpus *before* filtering: a duplicate identifier is a
+    source defect (and makes identifier-keyed filter resolution ambiguous), so it
+    must fail even when a filter would exclude one of the copies. Detection logic
+    lives in corpus.find_collision so the lint gate shares it.
+    """
+    collision = find_collision(rules)
+    if collision is not None:
+        prev, dup = collision
+        raise PipelineError(
+            f"duplicate identifier {dup.identifier!r} "
+            f"in {dup.filepath} and {prev.filepath}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Config enforcement (yara_modules allowlist, output_formats)
+# ---------------------------------------------------------------------------
+
+def check_modules(rules: list[RuleRecord], allowed_modules: list[str]) -> None:
+    """Hard-error on any module import outside config.yara_modules.
+
+    yara-python compiles more modules than the deployment engine supports
+    (D-1: Corelight ships pe/elf/math), so the compile gate cannot catch an
+    unsupported import — this allowlist is the only guard. Offender detection
+    lives in corpus.module_offenders so the lint gate shares it.
+    """
+    by_module: dict[str, set[str]] = {}
+    for path, mod in module_offenders(rules, allowed_modules):
+        by_module.setdefault(mod, set()).add(str(path))
+    if by_module:
+        details = "; ".join(
+            f"module {mod!r} imported in {', '.join(sorted(paths))}"
+            for mod, paths in sorted(by_module.items())
+        )
+        raise PipelineError(
+            f"module(s) not in config yara_modules {sorted(allowed_modules)}: {details}"
+        )
+
+
+def check_output_formats(output_formats: list[str]) -> None:
+    """Reject output formats the pipeline does not implement (D-2: source only)."""
+    unsupported = [f for f in output_formats if f != "source"]
+    if unsupported:
+        raise PipelineError(
+            f"unsupported output_formats {unsupported}: only 'source' is "
+            f"implemented (D-2; Corelight compiles internally)"
+        )
 
 
 # ---------------------------------------------------------------------------
 # Topological ordering
 # ---------------------------------------------------------------------------
 
-def topological_order(rules: list) -> list:
+def topological_order(rules: list[RuleRecord]) -> list[RuleRecord]:
     """Return rules ordered so every dependency precedes its dependent.
 
     Default group order: vendor → overrides → custom.
@@ -128,7 +170,9 @@ def topological_order(rules: list) -> list:
 # Emit
 # ---------------------------------------------------------------------------
 
-def build_source(rules: list, all_imports: set) -> tuple:
+def build_source(
+    rules: list[RuleRecord], all_imports: set[str],
+) -> tuple[str, list[tuple[int, RuleRecord]]]:
     """Assemble the merged source as a string (does not touch disk).
 
     Returns (source_str, rule_index) where rule_index is a list of
@@ -143,7 +187,7 @@ def build_source(rules: list, all_imports: set) -> tuple:
     if all_imports:
         parts.append("\n")
         lineno += 1
-    index: list = []
+    index: list[tuple[int, RuleRecord]] = []
     for rule in rules:
         index.append((lineno, rule))
         stripped = rule.raw_text.rstrip()
@@ -153,7 +197,7 @@ def build_source(rules: list, all_imports: set) -> tuple:
     return "".join(parts), index
 
 
-def _locate_rule(index: list, lineno: int):
+def _locate_rule(index: list[tuple[int, RuleRecord]], lineno: int) -> RuleRecord | None:
     """Return the RuleRecord whose block contains lineno, or None."""
     if not index:
         return None
@@ -166,7 +210,11 @@ def _locate_rule(index: list, lineno: int):
 # Compile
 # ---------------------------------------------------------------------------
 
-def compile_rules(source: str, externals: dict, rule_index: list | None = None) -> None:
+def compile_rules(
+    source: str,
+    externals: dict[str, str],
+    rule_index: list[tuple[int, RuleRecord]] | None = None,
+) -> None:
     """Compile via yara-python as the authoritative validation gate.
 
     Takes the merged source string directly so no unvalidated file is
@@ -191,9 +239,9 @@ def compile_rules(source: str, externals: dict, rule_index: list | None = None) 
                     except ValueError:
                         rel = record.filepath
                     annotation = f" (rule '{record.identifier}' in {rel})"
-        raise PipelineError(f"YARA compilation failed{annotation}: {msg}")
+        raise PipelineError(f"YARA compilation failed{annotation}: {msg}") from exc
     except Exception as exc:
-        raise PipelineError(f"unexpected compilation error: {exc}")
+        raise PipelineError(f"unexpected compilation error: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -205,10 +253,10 @@ def _sha256(path: Path) -> str:
 
 
 def write_manifest(
-    rules: list,
-    removed_ids: list,
-    exclusion_record: list,
-    source_files: list,
+    rules: list[RuleRecord],
+    removed_ids: list[str],
+    exclusion_record: list[dict],
+    source_files: list[Path],
     dest: Path,
 ) -> None:
     counts = {origin: sum(1 for r in rules if r.origin == origin)
@@ -247,15 +295,18 @@ def write_manifest(
 # Main
 # ---------------------------------------------------------------------------
 
-def _build(root: Path) -> tuple:
+def build(root: Path) -> tuple[list[RuleRecord], list[str], list[dict], Path]:
     """Run the full pipeline. Returns (ordered, removed_ids, exclusion_record, output_path).
 
     Raises ConfigError / PipelineError on any failure; the CLI boundary (main) turns
-    those into an ERROR message and exit 1.
+    those into an ERROR message and exit 1. Public entry point — the test harness
+    uses it as a local fallback when no pre-built dist/ artifacts exist.
     """
     config = load_config(root)
     manifest_entries = load_manifest(root)
     filter_policy = load_filter_policy(root)
+
+    check_output_formats(config.output_formats)
 
     # --- Parse ---
     corpus_data = load_corpus(root)
@@ -276,23 +327,30 @@ def _build(root: Path) -> tuple:
     # --- Strip superseded vendor rules ---
     vendor_remainder, removed_ids = strip_superseded(corpus_data.vendor_rules, manifest_entries)
 
+    # --- Collision check (pre-filter: a duplicate is a source defect even if a
+    # filter would exclude one copy, and dup identifiers make filter resolution
+    # ambiguous) ---
+    post_strip = vendor_remainder + corpus_data.override_rules + corpus_data.custom_rules
+    check_collisions(post_strip)
+
+    # --- Module allowlist (deployment engine supports fewer modules than the
+    # compile gate; checked pre-filter so an unsupported import never lingers) ---
+    check_modules(post_strip, config.yara_modules)
+
     # --- Phase 3: filter policy ---
     included_rules, exclusion_record = apply_filters.run(
-        vendor_remainder + corpus_data.override_rules + corpus_data.custom_rules,
+        post_strip,
         filter_policy,
         root,
         manifest_entries,
         config,
     )
 
-    # --- Collision check ---
-    check_collisions(included_rules)
-
     # --- Topological order ---
     ordered = topological_order(included_rules)
 
     # --- Collect imports ---
-    all_imports: set = set()
+    all_imports: set[str] = set()
     for rule in ordered:
         all_imports.update(rule.imports)
 
@@ -325,7 +383,7 @@ def main() -> None:
     root = ROOT
     logger.info("Starting ruleset build (root: {})", root)
     try:
-        ordered, removed_ids, exclusion_record, output_path = _build(root)
+        ordered, removed_ids, exclusion_record, output_path = build(root)
     except (ConfigError, PipelineError) as exc:
         logger.error("Build failed: {}", exc)
         sys.exit(1)

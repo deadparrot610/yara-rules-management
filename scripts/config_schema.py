@@ -80,7 +80,7 @@ def _require_mapping(data, source: str) -> dict:
     return data
 
 
-def _str_list(value, source: str, key: str) -> list:
+def _str_list(value, source: str, key: str) -> list[str]:
     _check_type(value, list, source, key)
     for i, item in enumerate(value):
         _check_type(item, str, source, f"{key}[{i}]")
@@ -124,12 +124,12 @@ def parse_iso_date(value) -> date:
 
 @dataclass
 class BuildConfig:
-    output_formats: list
-    yara_modules: list
-    external_variables: dict
+    output_formats: list[str]
+    yara_modules: list[str]
+    external_variables: dict[str, str]
     stale_override_decisions: str
     coverage_gap_decisions: str
-    required_meta: list
+    required_meta: list[str]
 
     _ALLOWED = {
         "output_formats", "yara_modules", "external_variables",
@@ -170,7 +170,7 @@ class BuildConfig:
 @dataclass
 class OverrideEntry:
     override_rule: str
-    supersedes: list
+    supersedes: list[str]
     reason: str | None = None
     author: str | None = None
     date: str | None = None
@@ -243,10 +243,10 @@ class FilterDateRange:
                 continue
             try:
                 bounds[key] = parse_iso_date(raw)
-            except ValueError:
+            except ValueError as exc:
                 raise ConfigError(
                     f"{source}: {ctx}.{key} must be a YYYY-MM-DD date, got {raw!r}"
-                )
+                ) from exc
         if not bounds:
             raise ConfigError(
                 f"{source}: {ctx} needs at least one of {list(cls._BOUNDS)}"
@@ -260,9 +260,9 @@ class FilterMatch:
     name: str | None = None
     name_glob: str | None = None
     name_regex: str | None = None
-    tags: list | None = None
-    meta: dict | None = None
-    meta_in: dict | None = None  # values normalized to frozenset[str] in __post_init__
+    tags: list[str] | None = None
+    meta: dict[str, object] | None = None
+    meta_in: dict[str, frozenset[str]] | None = None  # normalized in __post_init__
     meta_date: FilterDateRange | None = None
 
     _ALLOWED = {"name", "name_glob", "name_regex", "tags", "meta", "meta_in",
@@ -379,7 +379,7 @@ class FilterPolicy:
     default_mode: str = "include_all"
     on_empty_output: str = "fail"
     min_output_rules: int = 1
-    filters: list = field(default_factory=list)
+    filters: list[FilterEntry] = field(default_factory=list)
     version: int | None = None
 
     _ALLOWED = {"default_mode", "on_empty_output", "min_output_rules",
@@ -442,10 +442,10 @@ def _load_yaml(path: Path):
     try:
         with path.open() as f:
             return yaml.safe_load(f)
-    except FileNotFoundError:
-        raise ConfigError(f"config file not found: {path}")
+    except FileNotFoundError as exc:
+        raise ConfigError(f"config file not found: {path}") from exc
     except yaml.YAMLError as exc:
-        raise ConfigError(f"{path}: invalid YAML: {exc}")
+        raise ConfigError(f"{path}: invalid YAML: {exc}") from exc
 
 
 def load_build_config(root: Path) -> BuildConfig:
@@ -453,7 +453,7 @@ def load_build_config(root: Path) -> BuildConfig:
     return BuildConfig.from_dict(_load_yaml(path), str(path))
 
 
-def load_override_manifest(root: Path) -> list:
+def load_override_manifest(root: Path) -> list[OverrideEntry]:
     path = root / "overrides" / "override_manifest.yaml"
     data = _load_yaml(path) or {}
     data = _require_mapping(data, str(path))
@@ -470,7 +470,7 @@ def load_filter_policy(root: Path) -> FilterPolicy:
     return FilterPolicy.from_dict(_load_yaml(path), str(path))
 
 
-def load_decisions(path: Path, list_key: str, secondary_field: str) -> list:
+def load_decisions(path: Path, list_key: str, secondary_field: str) -> list[DecisionEntry]:
     """Load a decisions file into a list of DecisionEntry.
 
     Returns [] when the file does not exist (a not-yet-created decisions file is
@@ -488,7 +488,9 @@ def load_decisions(path: Path, list_key: str, secondary_field: str) -> list:
             for i, e in enumerate(entries)]
 
 
-def load_decisions_map(path: Path, list_key: str, secondary_field: str) -> dict:
+def load_decisions_map(
+    path: Path, list_key: str, secondary_field: str,
+) -> dict[tuple[str, str | None], str]:
     """Load a decisions file into {(override_rule, secondary | None): decision}.
 
     A None secondary acts as a wildcard covering all secondaries for that override
@@ -498,7 +500,11 @@ def load_decisions_map(path: Path, list_key: str, secondary_field: str) -> dict:
             for e in load_decisions(path, list_key, secondary_field)}
 
 
-def lookup_decision(decisions: dict, override_rule: str, secondary: str):
+def lookup_decision(
+    decisions: dict[tuple[str, str | None], str],
+    override_rule: str,
+    secondary: str | None,
+) -> str | None:
     """Return the recorded decision for an (override_rule, secondary) pair.
 
     Checks the specific (override_rule, secondary) key first, then falls back to

@@ -1,0 +1,7 @@
+# Ruff config for the pipeline's Python (scripts/ + tests/).
+# Kept intentionally small: correctness (E/F) plus bugbear (B) for pitfalls like
+# missing exception chaining (B904). Style-only rule families are not enabled.
+line-length = 100
+
+[lint]
+select = ["E4", "E7", "E9", "F", "B"]
