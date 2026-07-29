@@ -7,3 +7,28 @@ external_variables:
 stale_override_decisions: overrides/stale_override_decisions.yaml
 coverage_gap_decisions: filters/coverage_gap_decisions.yaml
 required_meta: [author, date, description, reference, severity]
+
+# Date-valued meta fields. Lint validates these on EVERY rule (vendor included,
+# unlike required_meta) and the filter engine normalizes them before comparing
+# meta_date bounds. Source files are never rewritten.
+meta_dates:
+  fields: [date]
+
+  # Accepted non-ISO formats (strptime), TRIED IN THE ORDER LISTED. "%Y-%m-%d" is
+  # always tried first and must not appear here. Order is the tie-break for
+  # ambiguous values: with "%m/%d/%Y" before "%d/%m/%Y", "03/04/2026" is March 4.
+  # Month- and day-name directives (%b/%B/%a/%A) are rejected as locale-dependent
+  # — those belong to fuzzy_fallback, whose parser is locale-independent.
+  #
+  # Kept deliberately short: every fallback parse is recorded in the build
+  # manifest, so a real vendor drop tells you which formats to pin here rather
+  # than guessing and widening the ambiguity surface for formats never emitted.
+  input_formats:
+    - "%m/%d/%Y"      # 07/29/2026  (month-first)
+    - "%Y/%m/%d"      # 2026/07/29
+    - "%Y%m%d"        # 20260729
+
+  # Last-resort dateutil parse for anything above misses (e.g. "July 29, 2026").
+  # Values that do not specify a complete date are rejected, so an incomplete
+  # "July 2026" cannot silently acquire today's day-of-month (NFR-6).
+  fuzzy_fallback: true

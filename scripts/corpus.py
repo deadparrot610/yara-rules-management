@@ -12,6 +12,8 @@ from pathlib import Path
 
 import plyara
 
+import config_schema
+
 
 class PipelineError(Exception):
     """Raised on a build-pipeline failure (parse, collision, cycle, compile, checkpoint).
@@ -195,6 +197,57 @@ def module_offenders(
             seen.add(key)
             offenders.append(key)
     return offenders
+
+
+def meta_date_findings(
+    rules: list[RuleRecord], meta_dates,
+) -> tuple[list[dict], list[tuple[RuleRecord, str, object]]]:
+    """Return (normalizations, offenders) for the configured date meta fields.
+
+    normalizations records values that parsed but were *not* already ISO —
+    {"identifier", "field", "raw", "normalized", "via"} — i.e. the audit trail of
+    every value the pipeline reinterpreted. This is the only visible record of
+    that reinterpretation, since the rule source itself is emitted verbatim.
+
+    offenders are (rule, field, raw_value) triples nothing could parse.
+
+    A rule not carrying a configured field is skipped: absence is not an error
+    here (vendor feeds legitimately omit fields, and required_meta already owns
+    the completeness question for custom/override rules).
+
+    The single definition of "an unreadable rule date" shared by the lint gate
+    (scripts/lint.py) and the build gate (scripts/build_ruleset.py). Results are
+    sorted by (identifier, field) so the manifest is byte-identical across runs
+    on identical input (NFR-6).
+    """
+    normalizations: list[dict] = []
+    offenders: list[tuple[RuleRecord, str, object]] = []
+    if not meta_dates.fields:
+        return normalizations, offenders
+
+    for rule in rules:
+        for field_name in meta_dates.fields:
+            if field_name not in rule.meta:
+                continue
+            raw = rule.meta[field_name]
+            try:
+                normalized, via = config_schema.normalize_meta_date(raw, meta_dates)
+            except ValueError:
+                offenders.append((rule, field_name, raw))
+                continue
+            if via == config_schema.DATE_FORMAT:
+                continue
+            normalizations.append({
+                "identifier": rule.identifier,
+                "field": field_name,
+                "raw": str(raw),
+                "normalized": normalized.isoformat(),
+                "via": via,
+            })
+
+    normalizations.sort(key=lambda n: (n["identifier"], n["field"]))
+    offenders.sort(key=lambda o: (o[0].identifier, o[1]))
+    return normalizations, offenders
 
 
 # ---------------------------------------------------------------------------

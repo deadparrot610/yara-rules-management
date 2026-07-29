@@ -28,7 +28,7 @@ import apply_filters
 from config_schema import ConfigError
 from corpus import (
     PipelineError, RuleRecord, strip_superseded, load_corpus,
-    find_collision, module_offenders,
+    find_collision, module_offenders, meta_date_findings,
 )
 from logging_setup import setup_logging
 
@@ -258,6 +258,7 @@ def write_manifest(
     exclusion_record: list[dict],
     source_files: list[Path],
     dest: Path,
+    normalizations: list[dict] | None = None,
 ) -> None:
     counts = {origin: sum(1 for r in rules if r.origin == origin)
               for origin in ("vendor", "custom", "overrides")}
@@ -278,6 +279,11 @@ def write_manifest(
             "overrides": counts["overrides"],
         },
         "removed_vendor_rules": removed_ids,
+        # Rule dates that were not already ISO and had to be reinterpreted. The
+        # rule source ships verbatim, so this is the only record that it happened
+        # — and it is how a recurring vendor format gets promoted from the
+        # dateutil fallback into config meta_dates.input_formats. [] when clean.
+        "meta_date_normalizations": normalizations or [],
         "filtered_rules": exclusion_record,
         "source_hashes": {
             str(p.relative_to(dest.parent.parent)): _sha256(p)
@@ -370,8 +376,14 @@ def build(root: Path) -> tuple[list[RuleRecord], list[str], list[dict], Path]:
     output_path.write_text(merged_source)
 
     # --- Write manifest ---
+    # Computed on the final ordered list so the record describes what shipped,
+    # not what was parsed. Offenders are ignored here: an unreadable date either
+    # blocks at lint or raises from the filter engine, so anything reaching this
+    # point without a meta_date filter is a value no consumer ever reads.
+    normalizations, _ = meta_date_findings(ordered, config.meta_dates)
     write_manifest(ordered, removed_ids, exclusion_record,
-                   corpus_data.source_files, dist / "build_manifest.json")
+                   corpus_data.source_files, dist / "build_manifest.json",
+                   normalizations)
 
     return ordered, removed_ids, exclusion_record, output_path
 

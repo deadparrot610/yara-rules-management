@@ -8,10 +8,12 @@ Runs before the build as a fast, source-attributed gate (ARCHITECTURE.md §7):
   2. plyara parseability — every file must parse (delegated to corpus.parse).
   3. Required metadata — custom/override rules must carry every field in
      config.required_meta (vendor rules are exempt).
-  4. Module allowlist — every module import must appear in config.yara_modules
+  4. Date meta fields — every field in config.meta_dates.fields, on every rule
+     that carries it, must be readable as a date (all origins, vendor included).
+  5. Module allowlist — every module import must appear in config.yara_modules
      (the deployment engine supports fewer modules than the compile gate).
-  5. Naming conventions — rule identifiers must be well-formed.
-  6. Filter policy — schema validity (via config_schema.load_filter_policy) plus
+  6. Naming conventions — rule identifiers must be well-formed.
+  7. Filter policy — schema validity (via config_schema.load_filter_policy) plus
      a corpus-aware warning when a rule:/name selector names an absent identifier.
 
 Standalone:  python scripts/lint.py
@@ -108,7 +110,44 @@ def lint_metadata(rules: list, required_meta: list, root: Path) -> list:
 
 
 # ---------------------------------------------------------------------------
-# 3. Module allowlist
+# 3. Date-valued meta fields
+# ---------------------------------------------------------------------------
+
+def lint_dates(rules: list, meta_dates, root: Path) -> list:
+    """Report date meta fields that no configured input format can read.
+
+    ALL origins are in scope, vendor included — deliberately not _META_ORIGINS.
+    That exemption is about *completeness*: we cannot demand a feed committed as
+    received carry every required_meta field. This check makes no such demand, it
+    fires only when the field is PRESENT and unreadable, so exempting vendor
+    would exempt the only source the check exists for.
+
+    Catching this here rather than in the filter engine matters: apply_filters
+    parses a rule date only when a meta_date selector is active, so with no such
+    filter in policy an unreadable date would otherwise go entirely unnoticed
+    until the day someone writes one.
+    """
+    _, offenders = corpus.meta_date_findings(rules, meta_dates)
+    accepted = config_schema.describe_accepted_dates(meta_dates)
+    errors = []
+    for rule, field_name, raw in offenders:
+        loc = _rel(rule.filepath, root)
+        if not isinstance(raw, (str, int)) or isinstance(raw, bool):
+            errors.append(
+                f"{loc}: rule {rule.identifier!r} meta field {field_name!r} has "
+                f"type {type(raw).__name__}, expected a date string"
+            )
+            continue
+        errors.append(
+            f"{loc}: rule {rule.identifier!r} meta field {field_name!r} value "
+            f"{raw!r} is not a recognized date; {accepted} "
+            f"(config/build.yaml meta_dates.input_formats)"
+        )
+    return errors
+
+
+# ---------------------------------------------------------------------------
+# 4. Module allowlist
 # ---------------------------------------------------------------------------
 
 def lint_modules(rules: list, allowed_modules: list, root: Path) -> list:
@@ -149,7 +188,7 @@ def lint_collisions(post_strip: list, root: Path) -> list:
 
 
 # ---------------------------------------------------------------------------
-# 4. Naming conventions
+# 6. Naming conventions
 # ---------------------------------------------------------------------------
 
 def lint_naming(rules: list, root: Path) -> list:
@@ -176,7 +215,7 @@ def lint_naming(rules: list, root: Path) -> list:
 
 
 # ---------------------------------------------------------------------------
-# 5. Filter policy corpus-aware warnings (schema itself validated at load)
+# 7. Filter policy corpus-aware warnings (schema itself validated at load)
 # ---------------------------------------------------------------------------
 
 def lint_filter_policy(policy, corpus_ids: set) -> list:
@@ -232,6 +271,7 @@ def run_lint(root: Path) -> None:
     errors = []
     errors += lint_syntax(root, corpus_ids, config.external_variables)
     errors += lint_metadata(rules, config.required_meta, root)
+    errors += lint_dates(rules, config.meta_dates, root)
     errors += lint_modules(rules, config.yara_modules, root)
     errors += lint_collisions(post_strip, root)
     errors += lint_naming(rules, root)

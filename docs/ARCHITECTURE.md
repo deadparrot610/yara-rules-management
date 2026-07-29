@@ -267,11 +267,27 @@ external_variables:
 stale_override_decisions: overrides/stale_override_decisions.yaml
 coverage_gap_decisions: filters/coverage_gap_decisions.yaml
 required_meta: [author, date, description, reference, severity]
+meta_dates:                          # date-valued meta fields + how to read them
+  fields: [date]
+  input_formats: ["%m/%d/%Y", "%Y/%m/%d", "%Y%m%d"]   # tried in order after ISO
+  fuzzy_fallback: true               # dateutil last resort; incomplete dates rejected
 ```
+
+**Rule dates.** Vendor feeds do not all write `YYYY-MM-DD`, and the rule source is committed as
+received, so the pipeline normalizes at read time rather than rewriting files. `meta_dates`
+governs it: ISO first, then each `input_formats` entry **in the listed order** (the order is the
+tie-break for ambiguous values such as `03/04/2026`; the shipped config is month-first), then
+`dateutil` when `fuzzy_fallback` is set. `input_formats` rejects locale-dependent directives
+(`%b`/`%B`/`%a`/`%A`) because `strptime` resolves those against `LC_TIME`, which would make lint
+results machine-dependent; the fallback parser is locale-independent and handles month names.
+The fallback also rejects any value that does not fully specify a date — `dateutil` would
+otherwise backfill missing components from the current day, making output depend on when the
+build ran (NFR-6). Values that were reinterpreted are listed in the build manifest under
+`meta_date_normalizations`.
 
 ## 7. Components
 
-**`scripts/lint.py`** compiles each `.yara` file individually (fast, source-attributed syntax failure), confirms `plyara` can parse it, validates that every **custom and override** rule carries the metadata named in `required_meta` (vendor rules are committed as received and exempt), enforces naming conventions and the `yara_modules` import allowlist, and validates the **filter policy schema** (well-formed scopes/actions/selectors; warns when a `rule:` scope or exact `name` selector references an identifier not present in the corpus). Runs in the lint stage.
+**`scripts/lint.py`** compiles each `.yara` file individually (fast, source-attributed syntax failure), confirms `plyara` can parse it, validates that every **custom and override** rule carries the metadata named in `required_meta` (vendor rules are committed as received and exempt), checks that every field in `meta_dates.fields` is readable as a date on **every** rule that carries it (vendor included — the exemption above is about completeness, not readability, and the vendor feed is the reason this check exists), enforces naming conventions and the `yara_modules` import allowlist, and validates the **filter policy schema** (well-formed scopes/actions/selectors; warns when a `rule:` scope or exact `name` selector references an identifier not present in the corpus). Runs in the lint stage.
 
 **`scripts/check_overrides.py`** implements the manifest validation in §3.2–§3.3: detects stale and ambiguous override entries, reads `overrides/stale_override_decisions.yaml` to apply recorded reviewer decisions, and blocks on any unresolved stale entry. Runnable standalone (useful immediately after a vendor file update, before merging).
 

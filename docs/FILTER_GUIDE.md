@@ -132,14 +132,30 @@ Supply a lower and an upper bound together to express "between two dates."
 ```yaml
 match:
   meta_date:
-    field: date              # the meta field to read (its value must be YYYY-MM-DD)
+    field: date              # the meta field to read (normalized before comparison)
     on_or_after: "2026-05-01"
     on_or_before: "2026-06-30"
 ```
 
+**Bounds are always strict ISO**, and a malformed bound in the policy fails at load. Leniency
+applies to rule input we don't control, never to policy we author.
+
+**Rule values are normalized first.** A vendor feed that writes `date = "04/18/2026"` still
+answers a `before: "2026-05-01"` bound correctly. Normalization is driven by `meta_dates` in
+`config/build.yaml`: ISO is tried first, then each `input_formats` entry **in the order listed**
+(that order is the tie-break for ambiguous values like `03/04/2026` — the shipped config reads
+month-first), then `dateutil` if `fuzzy_fallback` is on. Normalization happens at comparison
+time only; the rule's source text is emitted verbatim and is never rewritten.
+
+Every non-ISO value that had to be reinterpreted is recorded in
+`dist/build_manifest.json` under `meta_date_normalizations`, with the format that matched. That
+is how a recurring vendor format gets promoted out of the `dateutil` fallback and pinned in
+`input_formats`.
+
 A rule that **lacks** the named field is simply not selected. A rule whose field is **present
-but not a valid `YYYY-MM-DD` date** is a hard error (a typo'd date must not silently escape a
-filter). A malformed bound in the policy itself fails at load.
+but unreadable** is a hard error — a typo'd date must not silently escape a filter. In practice
+`scripts/lint.py` catches these first and lists every offender at once; the filter engine's
+error is the backstop for a build run without lint.
 
 ---
 
@@ -289,6 +305,9 @@ Fix it by including the dependency, or by also excluding the referring rule.
 
 - **Lint validates the policy schema** — malformed scopes, unknown fields, bad enum values, and
   malformed `meta_date` bounds fail fast with a sourced message.
+- **Lint also validates rule dates** — every field in `meta_dates.fields`, on every rule that
+  carries it (vendor included), must be readable. This runs whether or not any `meta_date`
+  filter exists, so a bad vendor date can't lie dormant until the day you write one.
 - **`exclude` of an already-superseded vendor identifier is a harmless no-op** — the rule is
   already gone; it's recorded but not an error.
 - **`include` naming an identifier absent from the corpus matches nothing** — lint warns that

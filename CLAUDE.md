@@ -9,7 +9,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-pip install -r requirements.txt          # plyara, yara-python, pytest, pyyaml
+pip install -r requirements.txt          # plyara, yara-python, pytest, pyyaml, python-dateutil
 
 python scripts/build_ruleset.py          # build dist/ artifacts
 python scripts/lint.py                   # lint all rule files + filter policy
@@ -50,7 +50,7 @@ Parse → load manifest + policy + config → validate overrides → strip super
 A referenced rule must precede the rule that references it. Default emission order: vendor-remainder → overrides → custom. Intra-corpus references trigger topological reordering; a cycle is a compile error.
 
 ### Config is the single source of truth
-`config/build.yaml` holds `output_formats`, `yara_modules`, `external_variables`, `stale_override_decisions`, `coverage_gap_decisions`, and `required_meta`. All scripts (build, lint, test harness) read it — never hardcode these values.
+`config/build.yaml` holds `output_formats`, `yara_modules`, `external_variables`, `stale_override_decisions`, `coverage_gap_decisions`, `required_meta`, and `meta_dates`. All scripts (build, lint, test harness) read it — never hardcode these values.
 
 ## Open decisions (implement as configurable defaults)
 
@@ -77,3 +77,11 @@ Implement D-9 as a read from `filters/filter_policy.yaml` — not hardcoded — 
 ## Required metadata fields for custom/override rules
 
 Every **custom and override** rule must carry: `author`, `date`, `description`, `reference`, `severity`. Lint rejects rules missing any of these (`required_meta` in `config/build.yaml`). Vendor rules are exempt — they are committed as received.
+
+## Rule date normalization
+
+`meta_dates` in `config/build.yaml` declares which meta fields hold dates (`fields`), which non-ISO formats to accept (`input_formats`, tried **in the listed order** after ISO — order is the ambiguity tie-break, and the shipped config is month-first), and whether to fall back to `dateutil` (`fuzzy_fallback`).
+
+Two separate concerns, deliberately not merged: `required_meta` is about **completeness** and exempts vendor; `lint_dates` is about **readability** and applies to every origin, firing only when a configured field is present and unparseable. Vendor is the reason it exists.
+
+Normalization happens at comparison time in `apply_filters` and never rewrites rule source — vendor files stay committed as received. Reinterpreted values are recorded in the build manifest under `meta_date_normalizations`, which is how a recurring vendor format gets promoted out of the fallback and pinned in `input_formats`. `parse_iso_date` remains ISO-only for policy files: leniency applies to input we don't control, never to config we author.

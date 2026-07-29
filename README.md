@@ -57,7 +57,7 @@ The pipeline produces artifacts; deploying them to the detection platform is a s
 Requires Python 3 and a local YARA install.
 
 ```bash
-pip install -r requirements.txt    # plyara, yara-python, pytest, pyyaml
+pip install -r requirements.txt    # plyara, yara-python, pytest, pyyaml, python-dateutil
 
 python scripts/build_ruleset.py    # build dist/merged_rules.yara and the manifest
 pytest tests/                      # run the test suite against the built ruleset

@@ -13,6 +13,7 @@ from config_schema import (
     FilterEntry,
     FilterMatch,
     FilterPolicy,
+    MetaDateConfig,
     OverrideEntry,
 )
 from corpus import PipelineError
@@ -23,7 +24,8 @@ def _filter(action, scope="global", match=None, fid=None):
     return FilterEntry(action=action, scope=scope, match=match, id=fid)
 
 
-def _config(coverage_gap_rel="coverage_gap_decisions.yaml") -> BuildConfig:
+def _config(coverage_gap_rel="coverage_gap_decisions.yaml",
+            meta_dates=None) -> BuildConfig:
     return BuildConfig(
         output_formats=["source"],
         yara_modules=["pe"],
@@ -31,6 +33,7 @@ def _config(coverage_gap_rel="coverage_gap_decisions.yaml") -> BuildConfig:
         stale_override_decisions="stale_override_decisions.yaml",
         coverage_gap_decisions=coverage_gap_rel,
         required_meta=["author"],
+        meta_dates=meta_dates or MetaDateConfig(),
     )
 
 
@@ -220,9 +223,81 @@ def test_meta_date_missing_field_falls_through():
 
 def test_meta_date_unparseable_value_raises():
     rule = _dated("Foo", "not-a-date")
-    with pytest.raises(PipelineError, match="not a valid YYYY-MM-DD date"):
+    with pytest.raises(PipelineError, match="not a recognized date"):
         apply_filters._resolve_rule(
             rule, [_date_filter(before=date(2026, 5, 1))], "include_all")
+
+
+# --- selector matching: meta_date normalization ----------------------------
+
+def _meta_dates(*formats, fuzzy=False):
+    return MetaDateConfig(
+        fields=["date"], input_formats=tuple(formats), fuzzy_fallback=fuzzy)
+
+
+def test_meta_date_normalizes_non_iso_rule_value():
+    rule = _dated("Foo", "04/18/2026")
+    action, _ = apply_filters._resolve_rule(
+        rule, [_date_filter(before=date(2026, 5, 1))], "include_all",
+        _meta_dates("%m/%d/%Y"))
+    assert action == "exclude"
+
+
+def test_meta_date_normalizes_via_fuzzy_fallback():
+    rule = _dated("Foo", "April 18, 2026")
+    action, _ = apply_filters._resolve_rule(
+        rule, [_date_filter(before=date(2026, 5, 1))], "include_all",
+        _meta_dates(fuzzy=True))
+    assert action == "exclude"
+
+
+def test_meta_date_without_config_stays_iso_only():
+    # The default keeps today's strictness: no config, no leniency.
+    rule = _dated("Foo", "04/18/2026")
+    with pytest.raises(PipelineError, match="not a recognized date"):
+        apply_filters._resolve_rule(
+            rule, [_date_filter(before=date(2026, 5, 1))], "include_all")
+
+
+def test_meta_date_normalization_respects_format_order():
+    # 05/06/2026 is May 6 under month-first, June 5 under day-first; a bound
+    # between the two shows which reading actually reached the comparison.
+    rule = _dated("Foo", "05/06/2026")
+    bound = _date_filter(before=date(2026, 6, 1))
+    month_first, _ = apply_filters._resolve_rule(
+        rule, [bound], "include_all", _meta_dates("%m/%d/%Y", "%d/%m/%Y"))
+    day_first, _ = apply_filters._resolve_rule(
+        rule, [bound], "include_all", _meta_dates("%d/%m/%Y", "%m/%d/%Y"))
+    assert month_first == "exclude"   # 2026-05-06 < 2026-06-01
+    assert day_first == "include"     # 2026-06-05 is not
+
+
+def test_meta_date_error_names_the_accepted_formats():
+    rule = _dated("Foo", "13.07.2026")
+    with pytest.raises(PipelineError, match=r"%m/%d/%Y"):
+        apply_filters._resolve_rule(
+            rule, [_date_filter(before=date(2026, 5, 1))], "include_all",
+            _meta_dates("%m/%d/%Y"))
+
+
+def test_run_threads_meta_dates_from_config(tmp_path):
+    # The acceptance path: config -> run -> selector, with nothing normalized in
+    # between and no rule source touched.
+    rules = [_dated("Old", "04/16/2026"), _dated("New", "July 13, 2026")]
+    policy = FilterPolicy(
+        default_mode="include_all",
+        min_output_rules=0,
+        filters=[_filter("exclude", scope="vendor", fid="drop-old",
+                         match=FilterMatch(meta_date=FilterDateRange(
+                             field="date", before=date(2026, 5, 1))))],
+    )
+    config = _config(meta_dates=_meta_dates("%m/%d/%Y", fuzzy=True))
+    included, exclusion_record = apply_filters.run(
+        rules, policy, tmp_path, [], config)
+    assert [r.identifier for r in included] == ["New"]
+    assert [r["identifier"] for r in exclusion_record] == ["Old"]
+    # Source values are untouched — normalization happens only at comparison.
+    assert rules[0].meta["date"] == "04/16/2026"
 
 
 def test_run_meta_date_exclusion_drops_in_range_rules(tmp_path):

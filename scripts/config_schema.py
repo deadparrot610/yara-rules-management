@@ -6,8 +6,9 @@ Every config file is parsed into a validated dataclass rather than a raw dict, s
 missing keys, wrong types, and invalid enum values fail fast with a sourced,
 actionable message instead of a downstream KeyError/AttributeError traceback.
 
-This module is a dependency-free leaf (imports only stdlib + yaml). All scripts
-load config through the load_* functions here.
+This module is a near-leaf (imports only stdlib, yaml, and dateutil — the last
+solely for the meta_dates fallback parser). All scripts load config through the
+load_* functions here.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 import yaml
+from dateutil import parser as dateutil_parser
 
 # Enum value sets — kept here as the single source of truth for validation.
 _DEFAULT_MODES = {"include_all", "exclude_all"}
@@ -87,6 +89,15 @@ def _str_list(value, source: str, key: str) -> list[str]:
     return list(value)
 
 
+def _reject_duplicates(values: list[str], source: str, key: str) -> list[str]:
+    seen: set[str] = set()
+    for item in values:
+        if item in seen:
+            raise ConfigError(f"{source}: field '{key}' has a duplicate entry {item!r}")
+        seen.add(item)
+    return values
+
+
 def _enum(value: str, allowed: set, source: str, key: str) -> str:
     if value not in allowed:
         raise ConfigError(
@@ -119,8 +130,183 @@ def parse_iso_date(value) -> date:
 
 
 # ---------------------------------------------------------------------------
+# Rule meta date normalization
+#
+# parse_iso_date above stays ISO-only: it parses dates written in *our own* YAML
+# (filter policy bounds), and a vendor's sloppy format must never become legal
+# there. The functions below are the input-leniency layer for values arriving in
+# rule meta fields, which we do not control and are forbidden to rewrite.
+# ---------------------------------------------------------------------------
+
+# strptime directives whose text is locale-dependent. A format using one would
+# parse under LC_ALL=C and fail under e.g. de_DE, making lint results depend on
+# the machine (NFR-6). dateutil's parser carries its own English tables and is
+# locale-independent, so month-name input belongs in the fuzzy fallback instead.
+_LOCALE_DIRECTIVES = ("%a", "%A", "%b", "%B", "%p")
+
+# Two defaults differing in every component, used to detect dateutil's backfill.
+_SENTINEL_A = datetime(1801, 3, 5)
+_SENTINEL_B = datetime(1902, 7, 11)
+
+
+def validate_date_format(fmt: str) -> None:
+    """Raise ValueError if `fmt` is not a strptime format that round-trips a date.
+
+    Rejects bogus directives ('%q') and lossy ones ('%b %Y', which would silently
+    normalize every value to the 1st of the month), plus locale-dependent ones.
+    """
+    for directive in _LOCALE_DIRECTIVES:
+        if directive in fmt:
+            raise ValueError(
+                f"contains locale-dependent directive {directive!r}; use "
+                f"fuzzy_fallback for month- and day-name input"
+            )
+    probe = date(2026, 7, 13)
+    try:
+        parsed = datetime.strptime(probe.strftime(fmt), fmt).date()
+    except (ValueError, TypeError, IndexError) as exc:
+        raise ValueError(f"is not a usable strptime format: {exc}") from exc
+    if parsed != probe:
+        raise ValueError("does not round-trip a full date (year, month and day)")
+
+
+def _dateutil_strict(value: str) -> date:
+    """Parse via dateutil, rejecting any value that omits part of the date.
+
+    dateutil fills unspecified components from its `default`, so 'July 2026'
+    would silently acquire today's day-of-month and make the build's output
+    depend on the day it ran (NFR-6). Parsing against two sentinels that differ
+    in every component surfaces that backfill as a disagreement.
+
+    dayfirst is pinned False (month-first: 03/04/2026 is March 4). It is
+    deliberately not configurable — a knob would let one corpus normalize two
+    ways depending on config, which is the ambiguity this is meant to remove.
+    """
+    try:
+        a = dateutil_parser.parse(value, default=_SENTINEL_A, dayfirst=False)
+        b = dateutil_parser.parse(value, default=_SENTINEL_B, dayfirst=False)
+    except (ValueError, OverflowError, TypeError) as exc:
+        raise ValueError(f"{value!r} is not a parseable date: {exc}") from exc
+    if a.date() != b.date():
+        raise ValueError(f"{value!r} does not specify a complete date")
+    return a.date()
+
+
+def normalize_meta_date(value, spec: "MetaDateConfig | None" = None) -> tuple[date, str]:
+    """Parse a rule meta value into (date, how_it_was_parsed).
+
+    Tries DATE_FORMAT, then each spec.input_formats entry IN THE ORDER GIVEN —
+    order is the documented tie-break for ambiguous formats, so it is a config
+    decision rather than a heuristic — then dateutil if spec.fuzzy_fallback.
+
+    The second element of the return is the format string that matched, or
+    'dateutil', so callers can record how a value was reinterpreted.
+
+    Raises ValueError when nothing matches. With no spec this is ISO-only, i.e.
+    exactly the behavior that predates the meta_dates config.
+    """
+    spec = spec if spec is not None else MetaDateConfig()
+
+    # bool before int: bool is an int subclass, and `date = true` is a mistake
+    # worth naming rather than coercing.
+    if isinstance(value, bool):
+        raise ValueError("expected a date string, got bool")
+    if isinstance(value, int):
+        # plyara yields an unquoted `date = 20260713` as an int.
+        value = str(value)
+    if not isinstance(value, str):
+        raise ValueError(f"expected a date string, got {type(value).__name__}")
+
+    try:
+        return parse_iso_date(value), DATE_FORMAT
+    except ValueError:
+        pass
+
+    for fmt in spec.input_formats:
+        try:
+            return datetime.strptime(value, fmt).date(), fmt
+        except ValueError:
+            continue
+
+    if spec.fuzzy_fallback:
+        return _dateutil_strict(value), "dateutil"
+
+    tried = [DATE_FORMAT, *spec.input_formats]
+    raise ValueError(
+        f"{value!r} matches none of {tried} and fuzzy_fallback is off"
+    )
+
+
+def describe_accepted_dates(spec: "MetaDateConfig | None" = None) -> str:
+    """Human-readable list of what normalize_meta_date accepts, for error text.
+
+    Shared by the lint gate and the filter engine so both name the same formats
+    and point at the same config key.
+    """
+    spec = spec if spec is not None else MetaDateConfig()
+    tried = [DATE_FORMAT, *spec.input_formats]
+    tail = " then dateutil" if spec.fuzzy_fallback else " (fuzzy_fallback off)"
+    return f"accepted formats {tried}{tail}"
+
+
+# ---------------------------------------------------------------------------
 # build.yaml
 # ---------------------------------------------------------------------------
+
+
+@dataclass
+class MetaDateConfig:
+    """Which rule meta fields hold dates, and how to read them.
+
+    Empty `fields` disables the feature entirely: the lint check and the
+    manifest's normalization record both become no-ops.
+    """
+    fields: list[str] = field(default_factory=list)
+    input_formats: tuple[str, ...] = ()
+    fuzzy_fallback: bool = False
+
+    _ALLOWED = {"fields", "input_formats", "fuzzy_fallback"}
+
+    @classmethod
+    def from_dict(cls, data, source: str) -> "MetaDateConfig":
+        # Absent key == feature off, so an older build.yaml keeps working.
+        if data is None:
+            return cls()
+        ctx = "meta_dates"
+        if not isinstance(data, dict):
+            raise ConfigError(f"{source}: {ctx} must be a mapping, "
+                              f"got {type(data).__name__}")
+        _no_unknown_keys(data, cls._ALLOWED, source, ctx)
+
+        fields = _str_list(
+            _optional(data, "fields", list, source, []), source, f"{ctx}.fields")
+        _reject_duplicates(fields, source, f"{ctx}.fields")
+
+        formats = _str_list(
+            _optional(data, "input_formats", list, source, []),
+            source, f"{ctx}.input_formats")
+        _reject_duplicates(formats, source, f"{ctx}.input_formats")
+
+        for i, fmt in enumerate(formats):
+            if fmt == DATE_FORMAT:
+                raise ConfigError(
+                    f"{source}: {ctx}.input_formats[{i}] must not list "
+                    f"{DATE_FORMAT!r}; ISO is always accepted first"
+                )
+            try:
+                validate_date_format(fmt)
+            except ValueError as exc:
+                raise ConfigError(
+                    f"{source}: {ctx}.input_formats[{i}] {fmt!r} {exc}"
+                ) from exc
+
+        return cls(
+            fields=fields,
+            # A tuple: hashable, and unmistakably ordered — order is the
+            # tie-break for ambiguous formats.
+            input_formats=tuple(formats),
+            fuzzy_fallback=_optional(data, "fuzzy_fallback", bool, source, False),
+        )
 
 @dataclass
 class BuildConfig:
@@ -130,11 +316,14 @@ class BuildConfig:
     stale_override_decisions: str
     coverage_gap_decisions: str
     required_meta: list[str]
+    # Trailing with a default: absent from build.yaml means "feature off", and
+    # in-memory BuildConfig(...) construction in tests stays valid unchanged.
+    meta_dates: MetaDateConfig = field(default_factory=MetaDateConfig)
 
     _ALLOWED = {
         "output_formats", "yara_modules", "external_variables",
         "stale_override_decisions", "coverage_gap_decisions",
-        "required_meta",
+        "required_meta", "meta_dates",
     }
 
     @classmethod
@@ -160,6 +349,7 @@ class BuildConfig:
             coverage_gap_decisions=_require(data, "coverage_gap_decisions", str, source),
             required_meta=_str_list(
                 _require(data, "required_meta", list, source), source, "required_meta"),
+            meta_dates=MetaDateConfig.from_dict(data.get("meta_dates"), source),
         )
 
 

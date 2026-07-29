@@ -7,6 +7,7 @@ import pytest
 import config_schema
 import lint
 from config_schema import FilterEntry, FilterMatch, FilterPolicy
+from corpus import PipelineError
 from conftest import make_rule
 
 # Pure metadata/naming checks only format paths; a fixed root keeps them off disk.
@@ -187,7 +188,92 @@ def test_malformed_filter_policy_raises_config_error(tmp_path):
         config_schema.load_filter_policy(tmp_path)
 
 
+# --- date meta fields ------------------------------------------------------
+
+def _date_config(*formats, fields=("date",), fuzzy=False):
+    return config_schema.MetaDateConfig(
+        fields=list(fields), input_formats=tuple(formats), fuzzy_fallback=fuzzy)
+
+
+def test_lint_dates_iso_passes():
+    rule = make_rule("vendor_rule", meta={"date": "2026-07-13"})
+    assert lint.lint_dates([rule], _date_config("%m/%d/%Y"), REPO) == []
+
+
+def test_lint_dates_normalizable_value_passes():
+    rule = make_rule("vendor_rule", meta={"date": "07/13/2026"})
+    assert lint.lint_dates([rule], _date_config("%m/%d/%Y"), REPO) == []
+
+
+def test_lint_dates_applies_to_vendor_origin():
+    # The load-bearing contrast with test_vendor_rule_exempt_from_meta: vendor is
+    # exempt from *completeness* but not from readability, and the vendor feed is
+    # the whole reason this check exists.
+    rule = make_rule("vendor_rule", origin="vendor",
+                     meta={"date": "sometime in July"})
+    errors = lint.lint_dates([rule], _date_config("%m/%d/%Y"), REPO)
+    assert any("not a recognized date" in e for e in errors)
+
+
+def test_lint_dates_absent_field_is_not_an_error():
+    rule = make_rule("vendor_rule", meta={"author": "x"})
+    assert lint.lint_dates([rule], _date_config(), REPO) == []
+
+
+def test_lint_dates_error_names_the_config_key():
+    # The fix for a recognizable-but-unlisted format is one YAML line; the error
+    # has to say which one.
+    rule = make_rule("vendor_rule", meta={"date": "13.07.2026"})
+    errors = lint.lint_dates([rule], _date_config("%m/%d/%Y"), REPO)
+    assert any("meta_dates.input_formats" in e for e in errors)
+    assert any("'%m/%d/%Y'" in e for e in errors)
+
+
+def test_lint_dates_non_string_type_errors_distinctly():
+    rule = make_rule("vendor_rule", meta={"date": True})
+    errors = lint.lint_dates([rule], _date_config(fuzzy=True), REPO)
+    assert any("has type bool" in e for e in errors)
+
+
+def test_lint_dates_reports_every_offender():
+    # Collect-all, not abort-on-first: a vendor drop can carry many bad dates and
+    # one-per-CI-cycle triage is the failure mode this check exists to avoid.
+    rules = [make_rule(f"vendor_{i}", meta={"date": "nope"}) for i in range(3)]
+    assert len(lint.lint_dates(rules, _date_config(), REPO)) == 3
+
+
+def test_lint_dates_covers_every_configured_field():
+    rule = make_rule("vendor_rule", meta={"date": "2026-07-13", "first_seen": "nope"})
+    errors = lint.lint_dates(
+        [rule], _date_config(fields=("date", "first_seen")), REPO)
+    assert len(errors) == 1
+    assert "'first_seen'" in errors[0]
+
+
+def test_lint_dates_empty_config_is_a_noop():
+    rule = make_rule("vendor_rule", meta={"date": "sometime in July"})
+    assert lint.lint_dates([rule], config_schema.MetaDateConfig(), REPO) == []
+
+
 # --- run_lint orchestration ------------------------------------------------
 
 def test_real_corpus_passes(root):
     assert lint.run_lint(root) is None
+
+
+def test_run_lint_blocks_on_an_unreadable_vendor_date(root, tmp_path):
+    # End-to-end at the gate: a vendor drop with an unreadable date must fail the
+    # lint stage, not slip through to the build.
+    for rel in ("config/build.yaml", "filters/filter_policy.yaml",
+                "overrides/override_manifest.yaml"):
+        dest = tmp_path / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text((root / rel).read_text())
+    _write_corpus(tmp_path, vendor={"feed": (
+        'rule vendor_bad_date {\n'
+        '  meta:\n'
+        '    date = "sometime in July"\n'
+        '  condition:\n    true\n}\n'
+    )})
+    with pytest.raises(PipelineError, match="lint failed"):
+        lint.run_lint(tmp_path)

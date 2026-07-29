@@ -45,7 +45,7 @@ def _scope_applies(scope: str, rule) -> bool:
 # Selector matching
 # ---------------------------------------------------------------------------
 
-def _selector_matches(filter_entry, rule, rule_tags=None) -> bool:
+def _selector_matches(filter_entry, rule, rule_tags=None, meta_dates=None) -> bool:
     match = filter_entry.match
     if match is None:
         return True
@@ -75,28 +75,39 @@ def _selector_matches(filter_entry, rule, rule_tags=None) -> bool:
             if str(rule.meta.get(k)) not in vs:  # vs is a frozenset (FilterMatch.__post_init__)
                 return False
 
-    if match.meta_date is not None and not _meta_date_matches(match.meta_date, rule):
+    if match.meta_date is not None and not _meta_date_matches(
+        match.meta_date, rule, meta_dates
+    ):
         return False
 
     return True
 
 
-def _meta_date_matches(spec, rule) -> bool:
+def _meta_date_matches(spec, rule, meta_dates=None) -> bool:
     """Evaluate a FilterDateRange against a rule.
 
+    The rule's raw meta value is normalized per config.meta_dates before the
+    comparison, so a vendor rule dated '04/18/2026' still answers a
+    `before: 2026-05-01` bound correctly. Normalization happens here, at
+    comparison time, and never touches rule.raw_text — that string is emitted
+    verbatim into dist/, and vendor files are committed as received.
+
     A rule missing the field is simply not selected (returns False). A field
-    that is present but not a valid YYYY-MM-DD date is a hard error — a typo'd
-    rule date must not silently escape the filter.
+    that is present but unreadable is a hard error — a typo'd rule date must not
+    silently escape the filter. lint.lint_dates catches these earlier and lists
+    them all at once; this stays as the backstop for a build run without lint.
     """
     raw = rule.meta.get(spec.field)
     if raw is None:
         return False
     try:
-        value = config_schema.parse_iso_date(str(raw))
+        value, _ = config_schema.normalize_meta_date(raw, meta_dates)
     except ValueError as exc:
         raise PipelineError(
             f"rule {rule.identifier!r}: meta field {spec.field!r} value {raw!r} "
-            f"is not a valid YYYY-MM-DD date"
+            f"is not a recognized date; "
+            f"{config_schema.describe_accepted_dates(meta_dates)}; "
+            f"run scripts/lint.py for the full list of offenders"
         ) from exc
     if spec.after is not None and not value > spec.after:
         return False
@@ -113,12 +124,14 @@ def _meta_date_matches(spec, rule) -> bool:
 # Per-rule resolution
 # ---------------------------------------------------------------------------
 
-def _resolve_rule(rule, filters: list, default_mode: str) -> tuple[str, object]:
+def _resolve_rule(
+    rule, filters: list, default_mode: str, meta_dates=None,
+) -> tuple[str, object]:
     """Return (action, responsible_filter | None)."""
     applicable = [
         f for f in filters
         if _scope_applies(f.scope, rule)
-        and _selector_matches(f, rule)
+        and _selector_matches(f, rule, None, meta_dates)
     ]
 
     if not applicable:
@@ -297,7 +310,8 @@ def run(
     exclusion_record = []
 
     for rule in rules:
-        action, responsible = _resolve_rule(rule, filters, default_mode)
+        action, responsible = _resolve_rule(
+            rule, filters, default_mode, config.meta_dates)
         if action == "include":
             included.append(rule)
         else:

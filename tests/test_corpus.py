@@ -1,7 +1,7 @@
 """Tests for the shared corpus primitives."""
 
 import corpus
-from config_schema import OverrideEntry
+from config_schema import MetaDateConfig, OverrideEntry
 from conftest import make_rule
 
 
@@ -85,3 +85,58 @@ def test_strip_superseded_against_real_manifest(root):
     remaining, removed = corpus.strip_superseded(c.vendor_rules, manifest)
     assert removed == ["vendor_override"]
     assert "vendor_override" not in {r.identifier for r in remaining}
+
+
+# --- meta date findings ----------------------------------------------------
+
+def _meta_dates(*formats, fields=("date",), fuzzy=False):
+    return MetaDateConfig(
+        fields=list(fields), input_formats=tuple(formats), fuzzy_fallback=fuzzy)
+
+
+def test_meta_date_findings_records_only_non_iso():
+    iso = make_rule("Iso", meta={"date": "2026-07-13"})
+    other = make_rule("Other", meta={"date": "07/13/2026"})
+    normalizations, offenders = corpus.meta_date_findings(
+        [iso, other], _meta_dates("%m/%d/%Y"))
+    assert offenders == []
+    assert normalizations == [{
+        "identifier": "Other", "field": "date", "raw": "07/13/2026",
+        "normalized": "2026-07-13", "via": "%m/%d/%Y",
+    }]
+
+
+def test_meta_date_findings_skips_absent_field():
+    rule = make_rule("NoDate", meta={"author": "x"})
+    assert corpus.meta_date_findings([rule], _meta_dates()) == ([], [])
+
+
+def test_meta_date_findings_reports_offender():
+    rule = make_rule("Bad", meta={"date": "sometime in July"})
+    normalizations, offenders = corpus.meta_date_findings([rule], _meta_dates())
+    assert normalizations == []
+    assert [(r.identifier, f, raw) for r, f, raw in offenders] == [
+        ("Bad", "date", "sometime in July")]
+
+
+def test_meta_date_findings_covers_every_configured_field():
+    rule = make_rule("Two", meta={"date": "07/13/2026", "first_seen": "07/01/2026"})
+    normalizations, _ = corpus.meta_date_findings(
+        [rule], _meta_dates("%m/%d/%Y", fields=("date", "first_seen")))
+    assert [n["field"] for n in normalizations] == ["date", "first_seen"]
+
+
+def test_meta_date_findings_is_order_independent():
+    # Identical input must produce identical output regardless of parse order
+    # (NFR-6) — the manifest embeds this list.
+    rules = [make_rule(i, meta={"date": "07/13/2026"}) for i in ("C", "A", "B")]
+    spec = _meta_dates("%m/%d/%Y")
+    forward, _ = corpus.meta_date_findings(rules, spec)
+    reverse, _ = corpus.meta_date_findings(list(reversed(rules)), spec)
+    assert [n["identifier"] for n in forward] == ["A", "B", "C"]
+    assert forward == reverse
+
+
+def test_meta_date_findings_empty_fields_is_a_noop():
+    rule = make_rule("Bad", meta={"date": "sometime in July"})
+    assert corpus.meta_date_findings([rule], MetaDateConfig()) == ([], [])

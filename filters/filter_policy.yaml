@@ -11,6 +11,11 @@ filters: []
 #   meta_in                        — meta value is one of a list
 #   meta_date                      — a date-valued meta field within a range
 #
+# meta_date compares the rule's date AFTER normalization per config/build.yaml
+# meta_dates, so a vendor rule written "04/18/2026" still answers a bound
+# correctly. The bounds below are always strict ISO — leniency applies to rule
+# input we don't control, never to policy we author.
+#
 # filters:
 #   - id: F-drop-old-vendor
 #     description: "Retire vendor rules authored before the Q2 refresh"
@@ -18,8 +23,8 @@ filters: []
 #     action: exclude
 #     match:
 #       meta_date:
-#         field: date            # YYYY-MM-DD meta field to compare
-#         before: "2026-05-01"   # strict <  (after: strict > )
+#         field: date            # meta field to compare (normalized)
+#         before: "2026-05-01"   # strict <  (after: strict > ), YYYY-MM-DD
 #     reason: "Superseded by refreshed vendor feed"
 #
 #   - id: F-keep-window
