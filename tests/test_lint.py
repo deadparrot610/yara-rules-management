@@ -190,19 +190,20 @@ def test_malformed_filter_policy_raises_config_error(tmp_path):
 
 # --- date meta fields ------------------------------------------------------
 
-def _date_config(*formats, fields=("date",), fuzzy=False):
+def _date_config(*formats, fields=("date",), on_unparsable="fail"):
     return config_schema.MetaDateConfig(
-        fields=list(fields), input_formats=tuple(formats), fuzzy_fallback=fuzzy)
+        fields=list(fields), input_formats=tuple(formats),
+        on_unparsable=on_unparsable)
 
 
 def test_lint_dates_iso_passes():
     rule = make_rule("vendor_rule", meta={"date": "2026-07-13"})
-    assert lint.lint_dates([rule], _date_config("%m/%d/%Y"), REPO) == []
+    assert lint.lint_dates([rule], _date_config("%m/%d/%Y"), REPO) == ([], [])
 
 
 def test_lint_dates_normalizable_value_passes():
     rule = make_rule("vendor_rule", meta={"date": "07/13/2026"})
-    assert lint.lint_dates([rule], _date_config("%m/%d/%Y"), REPO) == []
+    assert lint.lint_dates([rule], _date_config("%m/%d/%Y"), REPO) == ([], [])
 
 
 def test_lint_dates_applies_to_vendor_origin():
@@ -211,27 +212,27 @@ def test_lint_dates_applies_to_vendor_origin():
     # the whole reason this check exists.
     rule = make_rule("vendor_rule", origin="vendor",
                      meta={"date": "sometime in July"})
-    errors = lint.lint_dates([rule], _date_config("%m/%d/%Y"), REPO)
+    errors, _ = lint.lint_dates([rule], _date_config("%m/%d/%Y"), REPO)
     assert any("not a recognized date" in e for e in errors)
 
 
 def test_lint_dates_absent_field_is_not_an_error():
     rule = make_rule("vendor_rule", meta={"author": "x"})
-    assert lint.lint_dates([rule], _date_config(), REPO) == []
+    assert lint.lint_dates([rule], _date_config(), REPO) == ([], [])
 
 
 def test_lint_dates_error_names_the_config_key():
     # The fix for a recognizable-but-unlisted format is one YAML line; the error
     # has to say which one.
     rule = make_rule("vendor_rule", meta={"date": "13.07.2026"})
-    errors = lint.lint_dates([rule], _date_config("%m/%d/%Y"), REPO)
+    errors, _ = lint.lint_dates([rule], _date_config("%m/%d/%Y"), REPO)
     assert any("meta_dates.input_formats" in e for e in errors)
     assert any("'%m/%d/%Y'" in e for e in errors)
 
 
 def test_lint_dates_non_string_type_errors_distinctly():
     rule = make_rule("vendor_rule", meta={"date": True})
-    errors = lint.lint_dates([rule], _date_config(fuzzy=True), REPO)
+    errors, _ = lint.lint_dates([rule], _date_config("%Y%m%d"), REPO)
     assert any("has type bool" in e for e in errors)
 
 
@@ -239,12 +240,13 @@ def test_lint_dates_reports_every_offender():
     # Collect-all, not abort-on-first: a vendor drop can carry many bad dates and
     # one-per-CI-cycle triage is the failure mode this check exists to avoid.
     rules = [make_rule(f"vendor_{i}", meta={"date": "nope"}) for i in range(3)]
-    assert len(lint.lint_dates(rules, _date_config(), REPO)) == 3
+    errors, _ = lint.lint_dates(rules, _date_config(), REPO)
+    assert len(errors) == 3
 
 
 def test_lint_dates_covers_every_configured_field():
     rule = make_rule("vendor_rule", meta={"date": "2026-07-13", "first_seen": "nope"})
-    errors = lint.lint_dates(
+    errors, _ = lint.lint_dates(
         [rule], _date_config(fields=("date", "first_seen")), REPO)
     assert len(errors) == 1
     assert "'first_seen'" in errors[0]
@@ -252,7 +254,34 @@ def test_lint_dates_covers_every_configured_field():
 
 def test_lint_dates_empty_config_is_a_noop():
     rule = make_rule("vendor_rule", meta={"date": "sometime in July"})
-    assert lint.lint_dates([rule], config_schema.MetaDateConfig(), REPO) == []
+    assert lint.lint_dates([rule], config_schema.MetaDateConfig(), REPO) == ([], [])
+
+
+def test_lint_dates_warns_instead_of_erroring_under_warn_and_drop():
+    # Lint mirrors the configured policy: blocking on a value the build is
+    # configured to drop would make lint stricter than the policy it reports on.
+    rule = make_rule("vendor_rule", meta={"date": "sometime in July"})
+    errors, warnings = lint.lint_dates(
+        [rule], _date_config(on_unparsable="warn_and_drop"), REPO)
+    assert errors == []
+    assert len(warnings) == 1
+    assert "not a recognized date" in warnings[0]
+
+
+def test_lint_dates_warning_names_the_consequence():
+    # A warning that doesn't say the rule disappears is a warning nobody acts on.
+    rule = make_rule("vendor_rule", meta={"date": "sometime in July"})
+    _, warnings = lint.lint_dates(
+        [rule], _date_config(on_unparsable="warn_and_drop"), REPO)
+    assert "will drop this rule" in warnings[0]
+
+
+def test_lint_dates_warn_and_drop_covers_the_type_error_too():
+    rule = make_rule("vendor_rule", meta={"date": True})
+    errors, warnings = lint.lint_dates(
+        [rule], _date_config(on_unparsable="warn_and_drop"), REPO)
+    assert errors == []
+    assert any("has type bool" in w for w in warnings)
 
 
 # --- run_lint orchestration ------------------------------------------------

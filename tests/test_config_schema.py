@@ -90,7 +90,8 @@ def test_meta_dates_absent_defaults_to_disabled():
     cfg = BuildConfig.from_dict(_valid_build_dict(), SRC)
     assert cfg.meta_dates.fields == []
     assert cfg.meta_dates.input_formats == ()
-    assert cfg.meta_dates.fuzzy_fallback is False
+    # 'fail' is the default so an older build.yaml keeps blocking as before.
+    assert cfg.meta_dates.on_unparsable == "fail"
 
 
 def test_meta_dates_parses_and_preserves_order():
@@ -98,13 +99,29 @@ def test_meta_dates_parses_and_preserves_order():
     data["meta_dates"] = {
         "fields": ["date", "first_seen"],
         "input_formats": ["%m/%d/%Y", "%Y%m%d"],
-        "fuzzy_fallback": True,
+        "on_unparsable": "warn_and_drop",
     }
     cfg = BuildConfig.from_dict(data, SRC)
     assert cfg.meta_dates.fields == ["date", "first_seen"]
     # A tuple, and in the order given — order is the ambiguity tie-break.
     assert cfg.meta_dates.input_formats == ("%m/%d/%Y", "%Y%m%d")
-    assert cfg.meta_dates.fuzzy_fallback is True
+    assert cfg.meta_dates.on_unparsable == "warn_and_drop"
+
+
+def test_meta_dates_rejects_invalid_on_unparsable():
+    data = _valid_build_dict()
+    data["meta_dates"] = {"fields": ["date"], "on_unparsable": "ignore"}
+    with pytest.raises(ConfigError, match="on_unparsable"):
+        BuildConfig.from_dict(data, SRC)
+
+
+def test_meta_dates_rejects_retired_fuzzy_fallback():
+    # The dateutil fallback is gone; a config still carrying the key must fail
+    # loudly rather than silently losing its intent.
+    data = _valid_build_dict()
+    data["meta_dates"] = {"fields": ["date"], "fuzzy_fallback": True}
+    with pytest.raises(ConfigError, match="unknown field"):
+        BuildConfig.from_dict(data, SRC)
 
 
 def test_meta_dates_unknown_key():
@@ -148,7 +165,8 @@ def test_meta_dates_rejects_format_that_loses_the_date(bad):
 @pytest.mark.parametrize("bad", ["%d-%b-%Y", "%B %d, %Y", "%a %Y-%m-%d"])
 def test_meta_dates_rejects_locale_dependent_format(bad):
     # strptime month/day names follow LC_TIME, which would make lint results
-    # machine-dependent. These belong to fuzzy_fallback instead.
+    # machine-dependent. There is no looser parser to fall back to, so such a
+    # value is simply unparsable and on_unparsable decides its fate.
     data = _valid_build_dict()
     data["meta_dates"] = {"input_formats": [bad]}
     with pytest.raises(ConfigError, match="locale-dependent"):
@@ -162,9 +180,9 @@ def test_build_config_real_file_meta_dates(root):
 
 # --- normalize_meta_date ---------------------------------------------------
 
-def _spec(*formats, fuzzy=False):
+def _spec(*formats):
     return config_schema.MetaDateConfig(
-        fields=["date"], input_formats=tuple(formats), fuzzy_fallback=fuzzy)
+        fields=["date"], input_formats=tuple(formats))
 
 
 def test_normalize_iso_passthrough():
@@ -204,7 +222,7 @@ def test_normalize_coerces_int():
 
 def test_normalize_rejects_bool():
     with pytest.raises(ValueError, match="got bool"):
-        config_schema.normalize_meta_date(True, _spec(fuzzy=True))
+        config_schema.normalize_meta_date(True, _spec("%Y%m%d"))
 
 
 def test_normalize_rejects_unrecognized():
@@ -218,31 +236,33 @@ def test_normalize_without_spec_is_iso_only():
         config_schema.normalize_meta_date("07/13/2026")
 
 
-# --- dateutil fallback -----------------------------------------------------
+# --- strictness: nothing beyond the declared formats parses ----------------
 
-def test_fallback_parses_month_name():
-    value, via = config_schema.normalize_meta_date(
-        "July 29, 2026", _spec(fuzzy=True))
-    assert value == date(2026, 7, 29)
-    assert via == "dateutil"
-
-
-def test_fallback_is_month_first_for_ambiguous_values():
-    value, _ = config_schema.normalize_meta_date("03/04/2026", _spec(fuzzy=True))
-    assert value == date(2026, 3, 4)
-
-
-@pytest.mark.parametrize("incomplete", ["July 2026", "2026", "July"])
-def test_fallback_rejects_incomplete_dates(incomplete):
-    # dateutil backfills missing components from its default, which would make
-    # normalization depend on the day the build ran (NFR-6).
-    with pytest.raises(ValueError, match="does not specify a complete date"):
-        config_schema.normalize_meta_date(incomplete, _spec(fuzzy=True))
+@pytest.mark.parametrize(
+    "undeclared",
+    [
+        "July 29, 2026",   # month name — no locale-independent parser remains
+        "29-Jul-2026",
+        "July 2026",       # incomplete: a lenient parser would backfill the day
+        "2026",
+        "2026-07-13T00:00:00",
+    ],
+)
+def test_undeclared_formats_do_not_parse(undeclared):
+    # The whole point of dropping the fallback: a value only parses if the config
+    # says so. Everything else is unparsable, and on_unparsable decides its fate.
+    with pytest.raises(ValueError, match="matches none of"):
+        config_schema.normalize_meta_date(undeclared, _spec("%m/%d/%Y", "%Y%m%d"))
 
 
-def test_fallback_off_rejects_what_it_would_have_parsed():
-    with pytest.raises(ValueError, match="fuzzy_fallback is off"):
-        config_schema.normalize_meta_date("July 29, 2026", _spec())
+def test_error_names_every_format_tried():
+    with pytest.raises(ValueError, match=r"%Y-%m-%d.*%m/%d/%Y"):
+        config_schema.normalize_meta_date("nope", _spec("%m/%d/%Y"))
+
+
+def test_describe_accepted_dates_lists_iso_first():
+    text = config_schema.describe_accepted_dates(_spec("%m/%d/%Y"))
+    assert text == "accepted formats ['%Y-%m-%d', '%m/%d/%Y']"
 
 
 # --- bool-is-not-int guard ------------------------------------------------

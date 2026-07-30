@@ -89,9 +89,10 @@ def test_strip_superseded_against_real_manifest(root):
 
 # --- meta date findings ----------------------------------------------------
 
-def _meta_dates(*formats, fields=("date",), fuzzy=False):
+def _meta_dates(*formats, fields=("date",), on_unparsable="fail"):
     return MetaDateConfig(
-        fields=list(fields), input_formats=tuple(formats), fuzzy_fallback=fuzzy)
+        fields=list(fields), input_formats=tuple(formats),
+        on_unparsable=on_unparsable)
 
 
 def test_meta_date_findings_records_only_non_iso():
@@ -140,3 +141,60 @@ def test_meta_date_findings_is_order_independent():
 def test_meta_date_findings_empty_fields_is_a_noop():
     rule = make_rule("Bad", meta={"date": "sometime in July"})
     assert corpus.meta_date_findings([rule], MetaDateConfig()) == ([], [])
+
+
+# --- drop_unparsable_dates -------------------------------------------------
+
+def test_drop_removes_only_the_offenders_and_keeps_input_order():
+    # Order is the caller's emission-order invariant; the drop must not perturb
+    # what it leaves behind.
+    rules = [
+        make_rule("C", meta={"date": "2026-07-13"}),
+        make_rule("Bad", meta={"date": "sometime in July"}),
+        make_rule("A", meta={"date": "07/13/2026"}),
+    ]
+    kept, dropped = corpus.drop_unparsable_dates(rules, _meta_dates("%m/%d/%Y"))
+    assert [r.identifier for r in kept] == ["C", "A"]
+    assert [d["identifier"] for d in dropped] == ["Bad"]
+
+
+def test_drop_record_matches_the_exclusion_record_shape():
+    # Seeded straight into apply_filters' exclusion_record, so the keys must
+    # line up exactly; filter_id is None because no filter is responsible.
+    rule = make_rule("Bad", meta={"date": "sometime in July"})
+    _, dropped = corpus.drop_unparsable_dates([rule], _meta_dates())
+    assert set(dropped[0]) == {"identifier", "filter_id", "reason"}
+    assert dropped[0]["filter_id"] is None
+    assert "sometime in July" in dropped[0]["reason"]
+
+
+def test_drop_yields_one_record_per_rule_naming_every_bad_field():
+    rule = make_rule("Bad", meta={"date": "whenever", "first_seen": "also bad"})
+    _, dropped = corpus.drop_unparsable_dates(
+        [rule], _meta_dates(fields=("date", "first_seen")))
+    assert len(dropped) == 1
+    assert "date=" in dropped[0]["reason"]
+    assert "first_seen=" in dropped[0]["reason"]
+
+
+def test_drop_is_deterministic_across_input_order():
+    rules = [make_rule(i, meta={"date": "whenever"}) for i in ("C", "A", "B")]
+    spec = _meta_dates()
+    _, forward = corpus.drop_unparsable_dates(rules, spec)
+    _, reverse = corpus.drop_unparsable_dates(list(reversed(rules)), spec)
+    assert [d["identifier"] for d in forward] == ["A", "B", "C"]
+    assert forward == reverse
+
+
+def test_drop_with_no_offenders_returns_everything():
+    rules = [make_rule("A", meta={"date": "2026-07-13"})]
+    kept, dropped = corpus.drop_unparsable_dates(rules, _meta_dates())
+    assert [r.identifier for r in kept] == ["A"]
+    assert dropped == []
+
+
+def test_drop_empty_fields_is_a_noop():
+    rule = make_rule("Bad", meta={"date": "sometime in July"})
+    kept, dropped = corpus.drop_unparsable_dates([rule], MetaDateConfig())
+    assert kept == [rule]
+    assert dropped == []

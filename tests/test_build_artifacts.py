@@ -60,6 +60,14 @@ def test_manifest_records_meta_date_normalizations(built):
     assert manifest["meta_date_normalizations"] == []
 
 
+def test_manifest_records_dropped_unparsable_dates(built):
+    _, manifest_path = built
+    manifest = json.loads(manifest_path.read_text())
+    # Also unconditional, and always empty under on_unparsable: fail — that mode
+    # raises rather than dropping. The shipped config is 'fail'.
+    assert manifest["dropped_unparsable_dates"] == []
+
+
 def test_manifest_has_provenance(built):
     _, manifest_path = built
     manifest = json.loads(manifest_path.read_text())

@@ -9,7 +9,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-pip install -r requirements.txt          # plyara, yara-python, pytest, pyyaml, python-dateutil
+pip install -r requirements.txt          # plyara, yara-python, pytest, pyyaml, loguru
 
 python scripts/build_ruleset.py          # build dist/ artifacts
 python scripts/lint.py                   # lint all rule files + filter policy
@@ -80,8 +80,12 @@ Every **custom and override** rule must carry: `author`, `date`, `description`, 
 
 ## Rule date normalization
 
-`meta_dates` in `config/build.yaml` declares which meta fields hold dates (`fields`), which non-ISO formats to accept (`input_formats`, tried **in the listed order** after ISO — order is the ambiguity tie-break, and the shipped config is month-first), and whether to fall back to `dateutil` (`fuzzy_fallback`).
+`meta_dates` in `config/build.yaml` declares which meta fields hold dates (`fields`), which non-ISO formats to accept (`input_formats`, tried **in the listed order** after ISO — order is the ambiguity tie-break, and the shipped config is month-first), and what an unreadable date costs (`on_unparsable`).
+
+**Parsing is strict.** `input_formats` is the complete accepted set — there is no fallback parser, and locale-dependent directives (`%b`/`%B`/`%a`/`%A`/`%p`) are rejected outright because `strptime` resolves them against `LC_TIME`, which would make results machine-dependent (NFR-6). A date written with month names is unparsable by design.
 
 Two separate concerns, deliberately not merged: `required_meta` is about **completeness** and exempts vendor; `lint_dates` is about **readability** and applies to every origin, firing only when a configured field is present and unparseable. Vendor is the reason it exists.
 
-Normalization happens at comparison time in `apply_filters` and never rewrites rule source — vendor files stay committed as received. Reinterpreted values are recorded in the build manifest under `meta_date_normalizations`, which is how a recurring vendor format gets promoted out of the fallback and pinned in `input_formats`. `parse_iso_date` remains ISO-only for policy files: leniency applies to input we don't control, never to config we author.
+`on_unparsable: fail` (default) blocks lint and the build. `on_unparsable: warn_and_drop` logs every offender and removes those rules from the corpus — **after** the override strip, collision and module gates, and **before** the filter phase. That placement is load-bearing: dropping after the strip keeps a dropped vendor rule from spuriously making an override stale (an unconditional hard block), and dropping after the collision/module gates keeps a drop from masking a source defect. Drops are seeded into the filter engine's exclusion record via `apply_filters.run(pre_excluded=...)`, so they still face the coverage-gap, referential-integrity and floor cross-checks.
+
+Normalization happens at comparison time in `apply_filters` and never rewrites rule source — vendor files stay committed as received. Reinterpreted values are recorded in the build manifest under `meta_date_normalizations` and drops under `dropped_unparsable_dates`, which is how a recurring vendor format earns a pinned entry in `input_formats`. `parse_iso_date` remains ISO-only for policy files: leniency applies to input we don't control, never to config we author.

@@ -250,6 +250,43 @@ def meta_date_findings(
     return normalizations, offenders
 
 
+def drop_unparsable_dates(
+    rules: list[RuleRecord], meta_dates,
+) -> tuple[list[RuleRecord], list[dict]]:
+    """Remove rules carrying an unreadable date. For on_unparsable='warn_and_drop'.
+
+    Returns (kept_rules, dropped_records). Kept rules stay in input order — the
+    emission order invariant is the caller's, not ours to perturb.
+
+    A dropped record has the same shape as an apply_filters exclusion record —
+    {"identifier", "filter_id", "reason"} with filter_id None, since no filter is
+    responsible — so the caller can seed it straight into the filter engine's
+    exclusion_record and get the coverage-gap, referential-integrity and floor
+    cross-checks over drops for free. A rule with several unreadable date fields
+    yields one record naming all of them.
+    """
+    _, offenders = meta_date_findings(rules, meta_dates)
+    if not offenders:
+        return list(rules), []
+
+    # offenders is sorted by (identifier, field), so the per-rule field lists —
+    # and the records built from them — come out deterministically ordered.
+    reasons: dict[str, list[str]] = {}
+    for rule, field_name, raw in offenders:
+        reasons.setdefault(rule.identifier, []).append(f"{field_name}={raw!r}")
+
+    kept = [r for r in rules if r.identifier not in reasons]
+    dropped = [
+        {
+            "identifier": identifier,
+            "filter_id": None,
+            "reason": f"unparsable date: {', '.join(parts)}",
+        }
+        for identifier, parts in sorted(reasons.items())
+    ]
+    return kept, dropped
+
+
 # ---------------------------------------------------------------------------
 # Override strip
 # ---------------------------------------------------------------------------

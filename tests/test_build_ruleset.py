@@ -3,6 +3,7 @@
 import pytest
 
 import build_ruleset
+from config_schema import MetaDateConfig
 from corpus import PipelineError
 from conftest import make_rule
 
@@ -90,6 +91,62 @@ def test_check_modules_rejects_unlisted_module():
     r = make_rule("A", origin="custom", imports=["dotnet"])
     with pytest.raises(PipelineError, match="dotnet"):
         build_ruleset.check_modules([r], ["pe", "elf", "math"])
+
+
+# --- unparsable-date gate --------------------------------------------------
+
+def _dates(*formats, on_unparsable="fail"):
+    return MetaDateConfig(fields=["date"], input_formats=tuple(formats),
+                          on_unparsable=on_unparsable)
+
+
+def test_check_dates_fail_mode_raises_naming_every_offender():
+    rules = [
+        make_rule("Good", origin="vendor", meta={"date": "2026-07-13"}),
+        make_rule("Bad1", origin="vendor", meta={"date": "whenever"}),
+        make_rule("Bad2", origin="vendor", meta={"date": "July 2026"}),
+    ]
+    with pytest.raises(PipelineError, match="unreadable rule date") as exc:
+        build_ruleset.check_dates(rules, _dates("%m/%d/%Y"))
+    assert "Bad1" in str(exc.value)
+    assert "Bad2" in str(exc.value)
+    # The fix is one line of config, so the message has to name the key.
+    assert "meta_dates.input_formats" in str(exc.value)
+
+
+def test_check_dates_fail_mode_passes_the_corpus_through_unchanged():
+    rules = [make_rule("Good", origin="vendor", meta={"date": "07/13/2026"})]
+    kept, dropped = build_ruleset.check_dates(rules, _dates("%m/%d/%Y"))
+    assert kept == rules
+    assert dropped == []
+
+
+def test_check_dates_warn_and_drop_removes_offenders():
+    rules = [
+        make_rule("Good", origin="vendor", meta={"date": "2026-07-13"}),
+        make_rule("Bad", origin="vendor", meta={"date": "whenever"}),
+    ]
+    kept, dropped = build_ruleset.check_dates(
+        rules, _dates("%m/%d/%Y", on_unparsable="warn_and_drop"))
+    assert [r.identifier for r in kept] == ["Good"]
+    assert [d["identifier"] for d in dropped] == ["Bad"]
+
+
+def test_check_dates_warn_and_drop_never_raises():
+    rules = [make_rule("Bad", origin="vendor", meta={"date": "whenever"})]
+    kept, dropped = build_ruleset.check_dates(
+        rules, _dates(on_unparsable="warn_and_drop"))
+    assert kept == []
+    assert len(dropped) == 1
+
+
+def test_check_dates_disabled_config_is_a_noop_in_both_modes():
+    rules = [make_rule("Bad", origin="vendor", meta={"date": "whenever"})]
+    for mode in ("fail", "warn_and_drop"):
+        kept, dropped = build_ruleset.check_dates(
+            rules, MetaDateConfig(on_unparsable=mode))
+        assert kept == rules
+        assert dropped == []
 
 
 def test_check_output_formats_source_only():

@@ -10,6 +10,8 @@ Runs before the build as a fast, source-attributed gate (ARCHITECTURE.md §7):
      config.required_meta (vendor rules are exempt).
   4. Date meta fields — every field in config.meta_dates.fields, on every rule
      that carries it, must be readable as a date (all origins, vendor included).
+     Reported as errors or as warnings per config.meta_dates.on_unparsable, so
+     lint never blocks on something the build is configured to drop and continue.
   5. Module allowlist — every module import must appear in config.yara_modules
      (the deployment engine supports fewer modules than the compile gate).
   6. Naming conventions — rule identifiers must be well-formed.
@@ -113,8 +115,14 @@ def lint_metadata(rules: list, required_meta: list, root: Path) -> list:
 # 3. Date-valued meta fields
 # ---------------------------------------------------------------------------
 
-def lint_dates(rules: list, meta_dates, root: Path) -> list:
+def lint_dates(rules: list, meta_dates, root: Path) -> tuple[list, list]:
     """Report date meta fields that no configured input format can read.
+
+    Returns (errors, warnings): the findings land in exactly one of the two,
+    chosen by meta_dates.on_unparsable. Under 'fail' they block, matching the
+    build gate; under 'warn_and_drop' they are warnings that also name the
+    consequence, since blocking here on a value the build is configured to drop
+    would make lint stricter than the policy it reports on.
 
     ALL origins are in scope, vendor included — deliberately not _META_ORIGINS.
     That exemption is about *completeness*: we cannot demand a feed committed as
@@ -129,21 +137,23 @@ def lint_dates(rules: list, meta_dates, root: Path) -> list:
     """
     _, offenders = corpus.meta_date_findings(rules, meta_dates)
     accepted = config_schema.describe_accepted_dates(meta_dates)
-    errors = []
+    dropping = meta_dates.on_unparsable == "warn_and_drop"
+    consequence = " — the build will drop this rule" if dropping else ""
+    findings = []
     for rule, field_name, raw in offenders:
         loc = _rel(rule.filepath, root)
         if not isinstance(raw, (str, int)) or isinstance(raw, bool):
-            errors.append(
+            findings.append(
                 f"{loc}: rule {rule.identifier!r} meta field {field_name!r} has "
-                f"type {type(raw).__name__}, expected a date string"
+                f"type {type(raw).__name__}, expected a date string{consequence}"
             )
             continue
-        errors.append(
+        findings.append(
             f"{loc}: rule {rule.identifier!r} meta field {field_name!r} value "
             f"{raw!r} is not a recognized date; {accepted} "
-            f"(config/build.yaml meta_dates.input_formats)"
+            f"(config/build.yaml meta_dates.input_formats){consequence}"
         )
-    return errors
+    return ([], findings) if dropping else (findings, [])
 
 
 # ---------------------------------------------------------------------------
@@ -252,7 +262,8 @@ def lint_filter_policy(policy, corpus_ids: set) -> list:
 def run_lint(root: Path) -> None:
     """Run every lint check. Raises PipelineError if any error is found.
 
-    Warnings (absent filter selectors) are logged but never block. Config/policy
+    Warnings (absent filter selectors, and unreadable dates under
+    on_unparsable: warn_and_drop) are logged but never block. Config/policy
     schema failures surface as ConfigError from the load_* calls.
     """
     config = config_schema.load_build_config(root)
@@ -268,14 +279,18 @@ def run_lint(root: Path) -> None:
     vendor_remainder, _ = corpus.strip_superseded(corpus_data.vendor_rules, manifest_entries)
     post_strip = vendor_remainder + corpus_data.override_rules + corpus_data.custom_rules
 
+    date_errors, date_warnings = lint_dates(rules, config.meta_dates, root)
+
     errors = []
     errors += lint_syntax(root, corpus_ids, config.external_variables)
     errors += lint_metadata(rules, config.required_meta, root)
-    errors += lint_dates(rules, config.meta_dates, root)
+    errors += date_errors
     errors += lint_modules(rules, config.yara_modules, root)
     errors += lint_collisions(post_strip, root)
     errors += lint_naming(rules, root)
 
+    for w in date_warnings:
+        logger.warning(w)
     for w in lint_filter_policy(policy, corpus_ids):
         logger.warning(w)
 

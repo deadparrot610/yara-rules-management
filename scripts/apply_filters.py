@@ -208,18 +208,23 @@ def _coverage_gap_check(
         ]
         for override_rule, filter_id in cleanup:
             lines.append(
-                f"  - Revise the filter policy so {override_rule!r} is no longer excluded"
+                f"  - Restore {override_rule!r} to the output"
             )
             if filter_id:
-                lines.append(f"    (responsible filter: {filter_id})")
+                lines.append(
+                    f"    (revise the filter policy; responsible filter: {filter_id})")
+            else:
+                lines.append(
+                    "    (no responsible filter — check for an unreadable rule date)")
         logger.warning("\n".join(lines))
 
     if blocking:
         lines = [
             "COVERAGE GAP CHECKPOINT — build blocked.",
             "",
-            "The following override rules are excluded by a filter, but the vendor rules",
-            "they superseded have already been removed. Record a decision in:",
+            "The following override rules are not in the output (excluded by a filter,",
+            "or dropped for an unreadable date), but the vendor rules they superseded",
+            "have already been removed. Record a decision in:",
             f"  {config.coverage_gap_decisions}",
             "",
         ]
@@ -296,18 +301,28 @@ def run(
     root: Path,
     manifest_entries: list,
     config,
+    pre_excluded: list[dict] | None = None,
 ) -> tuple[list, list[dict]]:
     """Apply the filter policy to the post-strip corpus.
 
     policy is a config_schema.FilterPolicy; config is a config_schema.BuildConfig.
     Returns (included_rules, exclusion_record).
     exclusion_record: list of {identifier, filter_id, reason}.
+
+    pre_excluded carries rules already removed from `rules` before this call —
+    today, only the unparsable-date drops (corpus.drop_unparsable_dates). They
+    are seeded into exclusion_record so the three cross-checks below treat them
+    exactly like a filter exclusion: dropping an override rule whose superseded
+    vendor rules are gone still trips the coverage-gap checkpoint, a dropped rule
+    still referenced by an included condition is still an error, and drops count
+    against the output floor. Their filter_id is None, which the coverage-gap
+    lookup already handles as the wildcard key.
     """
     default_mode = policy.default_mode
     filters = policy.filters
 
     included = []
-    exclusion_record = []
+    exclusion_record = list(pre_excluded or [])
 
     for rule in rules:
         action, responsible = _resolve_rule(

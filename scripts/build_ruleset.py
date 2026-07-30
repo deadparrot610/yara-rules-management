@@ -3,8 +3,9 @@
 Build the merged YARA ruleset.
 
 Build sequence: parse → validate overrides (check_overrides) → strip superseded
-vendor rules → collision check → apply filter policy (apply_filters) →
-topological order → compile (validation gate) → emit source → write manifest.
+vendor rules → collision check → module allowlist → unparsable-date gate →
+apply filter policy (apply_filters) → topological order →
+compile (validation gate) → emit source → write manifest.
 """
 
 import os
@@ -28,7 +29,7 @@ import apply_filters
 from config_schema import ConfigError
 from corpus import (
     PipelineError, RuleRecord, strip_superseded, load_corpus,
-    find_collision, module_offenders, meta_date_findings,
+    find_collision, module_offenders, meta_date_findings, drop_unparsable_dates,
 )
 from logging_setup import setup_logging
 
@@ -100,6 +101,46 @@ def check_modules(rules: list[RuleRecord], allowed_modules: list[str]) -> None:
         raise PipelineError(
             f"module(s) not in config yara_modules {sorted(allowed_modules)}: {details}"
         )
+
+
+def check_dates(
+    rules: list[RuleRecord], meta_dates,
+) -> tuple[list[RuleRecord], list[dict]]:
+    """Enforce config.meta_dates.on_unparsable. Returns (rules, dropped_records).
+
+    Under 'fail' the corpus is returned untouched and any unreadable date raises.
+    Under 'warn_and_drop' the offenders are logged and removed, and the returned
+    records are seeded into the filter engine's exclusion record so the drops
+    still face the coverage-gap, referential-integrity and floor cross-checks.
+
+    Runs *after* the collision and module gates: a duplicate identifier or an
+    unsupported import is a source defect that a drop must not hide.
+    """
+    if meta_dates.on_unparsable == "warn_and_drop":
+        kept, dropped = drop_unparsable_dates(rules, meta_dates)
+        if dropped:
+            lines = [
+                f"Dropped {len(dropped)} rule(s) with an unreadable date "
+                f"(meta_dates.on_unparsable: warn_and_drop);",
+                f"{config_schema.describe_accepted_dates(meta_dates)}.",
+                "",
+            ]
+            lines += [f"  {d['identifier']} — {d['reason']}" for d in dropped]
+            logger.warning("\n".join(lines))
+        return kept, dropped
+
+    _, offenders = meta_date_findings(rules, meta_dates)
+    if offenders:
+        details = "; ".join(
+            f"{rule.identifier!r} {field_name}={raw!r}"
+            for rule, field_name, raw in offenders
+        )
+        raise PipelineError(
+            f"{len(offenders)} unreadable rule date(s); "
+            f"{config_schema.describe_accepted_dates(meta_dates)} "
+            f"(config/build.yaml meta_dates.input_formats): {details}"
+        )
+    return rules, []
 
 
 def check_output_formats(output_formats: list[str]) -> None:
@@ -259,6 +300,7 @@ def write_manifest(
     source_files: list[Path],
     dest: Path,
     normalizations: list[dict] | None = None,
+    date_drops: list[dict] | None = None,
 ) -> None:
     counts = {origin: sum(1 for r in rules if r.origin == origin)
               for origin in ("vendor", "custom", "overrides")}
@@ -280,10 +322,13 @@ def write_manifest(
         },
         "removed_vendor_rules": removed_ids,
         # Rule dates that were not already ISO and had to be reinterpreted. The
-        # rule source ships verbatim, so this is the only record that it happened
-        # — and it is how a recurring vendor format gets promoted from the
-        # dateutil fallback into config meta_dates.input_formats. [] when clean.
+        # rule source ships verbatim, so this is the only record that it happened.
+        # [] when clean.
         "meta_date_normalizations": normalizations or [],
+        # Rules removed by the unparsable-date gate under on_unparsable:
+        # warn_and_drop. Always [] under 'fail', which raises instead. This is
+        # how a recurring vendor format earns a place in meta_dates.input_formats.
+        "dropped_unparsable_dates": date_drops or [],
         "filtered_rules": exclusion_record,
         "source_hashes": {
             str(p.relative_to(dest.parent.parent)): _sha256(p)
@@ -343,6 +388,9 @@ def build(root: Path) -> tuple[list[RuleRecord], list[str], list[dict], Path]:
     # compile gate; checked pre-filter so an unsupported import never lingers) ---
     check_modules(post_strip, config.yara_modules)
 
+    # --- Unparsable-date gate (fail, or warn and drop before filtering) ---
+    post_strip, date_drops = check_dates(post_strip, config.meta_dates)
+
     # --- Phase 3: filter policy ---
     included_rules, exclusion_record = apply_filters.run(
         post_strip,
@@ -350,6 +398,7 @@ def build(root: Path) -> tuple[list[RuleRecord], list[str], list[dict], Path]:
         root,
         manifest_entries,
         config,
+        pre_excluded=date_drops,
     )
 
     # --- Topological order ---
@@ -377,13 +426,12 @@ def build(root: Path) -> tuple[list[RuleRecord], list[str], list[dict], Path]:
 
     # --- Write manifest ---
     # Computed on the final ordered list so the record describes what shipped,
-    # not what was parsed. Offenders are ignored here: an unreadable date either
-    # blocks at lint or raises from the filter engine, so anything reaching this
-    # point without a meta_date filter is a value no consumer ever reads.
+    # not what was parsed. There are no offenders left to report here: check_dates
+    # above either raised or removed every one of them.
     normalizations, _ = meta_date_findings(ordered, config.meta_dates)
     write_manifest(ordered, removed_ids, exclusion_record,
                    corpus_data.source_files, dist / "build_manifest.json",
-                   normalizations)
+                   normalizations, date_drops)
 
     return ordered, removed_ids, exclusion_record, output_path
 

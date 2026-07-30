@@ -11,10 +11,11 @@ filters: []
 #   meta_in                        — meta value is one of a list
 #   meta_date                      — a date-valued meta field within a range
 #
-# meta_date compares the rule's date AFTER normalization per config/build.yaml
-# meta_dates, so a vendor rule written "04/18/2026" still answers a bound
-# correctly. The bounds below are always strict ISO — leniency applies to rule
-# input we don't control, never to policy we author.
+# meta_date compares the rule's date after reading it against the formats
+# declared in config/build.yaml meta_dates.input_formats, so a vendor rule
+# written "04/18/2026" still answers a bound correctly. The bounds below are
+# always strict ISO — the declared-format leniency applies to rule input we
+# don't control, never to policy we author.
 #
 # filters:
 #   - id: F-drop-old-vendor

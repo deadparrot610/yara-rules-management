@@ -14,21 +14,31 @@ required_meta: [author, date, description, reference, severity]
 meta_dates:
   fields: [date]
 
-  # Accepted non-ISO formats (strptime), TRIED IN THE ORDER LISTED. "%Y-%m-%d" is
-  # always tried first and must not appear here. Order is the tie-break for
-  # ambiguous values: with "%m/%d/%Y" before "%d/%m/%Y", "03/04/2026" is March 4.
-  # Month- and day-name directives (%b/%B/%a/%A) are rejected as locale-dependent
-  # — those belong to fuzzy_fallback, whose parser is locale-independent.
+  # The COMPLETE set of accepted non-ISO formats (strptime), TRIED IN THE ORDER
+  # LISTED. "%Y-%m-%d" is always tried first and must not appear here. Order is
+  # the tie-break for ambiguous values: with "%m/%d/%Y" before "%d/%m/%Y",
+  # "03/04/2026" is March 4. There is no fallback parser — a value matching
+  # nothing listed here is unparsable, and on_unparsable below decides its fate.
   #
-  # Kept deliberately short: every fallback parse is recorded in the build
-  # manifest, so a real vendor drop tells you which formats to pin here rather
-  # than guessing and widening the ambiguity surface for formats never emitted.
+  # Month- and day-name directives (%b/%B/%a/%A) are rejected: strptime reads
+  # them against the machine's locale, which would make results depend on where
+  # the build ran (NFR-6). A vendor date like "July 29, 2026" is unparsable.
+  #
+  # Kept deliberately short: every unparsable value is named in the lint/build
+  # output and every non-ISO parse is recorded in the build manifest, so a real
+  # vendor drop tells you which formats to pin here rather than guessing and
+  # widening the ambiguity surface for formats never emitted.
   input_formats:
     - "%m/%d/%Y"      # 07/29/2026  (month-first)
     - "%Y/%m/%d"      # 2026/07/29
     - "%Y%m%d"        # 20260729
 
-  # Last-resort dateutil parse for anything above misses (e.g. "July 29, 2026").
-  # Values that do not specify a complete date are rejected, so an incomplete
-  # "July 2026" cannot silently acquire today's day-of-month (NFR-6).
-  fuzzy_fallback: true
+  # What an unparsable date costs:
+  #   fail          — lint errors and the build blocks. No artifact is written.
+  #   warn_and_drop — every offender is logged, and those rules are removed from
+  #                   the corpus after the override strip and before the filter
+  #                   phase. Drops are recorded in the build manifest under
+  #                   dropped_unparsable_dates and still run through the
+  #                   coverage-gap, referential-integrity and floor cross-checks,
+  #                   so dropping an override rule can still block the build.
+  on_unparsable: fail

@@ -6,9 +6,8 @@ Every config file is parsed into a validated dataclass rather than a raw dict, s
 missing keys, wrong types, and invalid enum values fail fast with a sourced,
 actionable message instead of a downstream KeyError/AttributeError traceback.
 
-This module is a near-leaf (imports only stdlib, yaml, and dateutil — the last
-solely for the meta_dates fallback parser). All scripts load config through the
-load_* functions here.
+This module is a dependency-free leaf (imports only stdlib + yaml). All scripts
+load config through the load_* functions here.
 """
 
 from __future__ import annotations
@@ -18,10 +17,10 @@ from datetime import date, datetime
 from pathlib import Path
 
 import yaml
-from dateutil import parser as dateutil_parser
 
 # Enum value sets — kept here as the single source of truth for validation.
 _DEFAULT_MODES = {"include_all", "exclude_all"}
+_UNPARSABLE_MODES = {"fail", "warn_and_drop"}
 _ON_EMPTY = {"fail", "warn"}
 _ACTIONS = {"include", "exclude"}
 # Rule origins usable as a filter scope; 'global' is a fourth scope keyword that
@@ -134,19 +133,18 @@ def parse_iso_date(value) -> date:
 #
 # parse_iso_date above stays ISO-only: it parses dates written in *our own* YAML
 # (filter policy bounds), and a vendor's sloppy format must never become legal
-# there. The functions below are the input-leniency layer for values arriving in
-# rule meta fields, which we do not control and are forbidden to rewrite.
+# there. The functions below read values arriving in rule meta fields, which we
+# do not control and are forbidden to rewrite. They are strict: a value parses
+# only against ISO or a format the config explicitly declares. Anything else is
+# an unparsable date, and meta_dates.on_unparsable decides what happens to it.
 # ---------------------------------------------------------------------------
 
 # strptime directives whose text is locale-dependent. A format using one would
 # parse under LC_ALL=C and fail under e.g. de_DE, making lint results depend on
-# the machine (NFR-6). dateutil's parser carries its own English tables and is
-# locale-independent, so month-name input belongs in the fuzzy fallback instead.
+# the machine (NFR-6), so they are not accepted in input_formats at all. A rule
+# date written with month or day names is therefore unparsable by design and is
+# handled by on_unparsable rather than by a looser parser.
 _LOCALE_DIRECTIVES = ("%a", "%A", "%b", "%B", "%p")
-
-# Two defaults differing in every component, used to detect dateutil's backfill.
-_SENTINEL_A = datetime(1801, 3, 5)
-_SENTINEL_B = datetime(1902, 7, 11)
 
 
 def validate_date_format(fmt: str) -> None:
@@ -158,8 +156,9 @@ def validate_date_format(fmt: str) -> None:
     for directive in _LOCALE_DIRECTIVES:
         if directive in fmt:
             raise ValueError(
-                f"contains locale-dependent directive {directive!r}; use "
-                f"fuzzy_fallback for month- and day-name input"
+                f"contains locale-dependent directive {directive!r}, which would "
+                f"make parsing depend on the machine's locale; month- and "
+                f"day-name input is not supported"
             )
     probe = date(2026, 7, 13)
     try:
@@ -170,37 +169,16 @@ def validate_date_format(fmt: str) -> None:
         raise ValueError("does not round-trip a full date (year, month and day)")
 
 
-def _dateutil_strict(value: str) -> date:
-    """Parse via dateutil, rejecting any value that omits part of the date.
-
-    dateutil fills unspecified components from its `default`, so 'July 2026'
-    would silently acquire today's day-of-month and make the build's output
-    depend on the day it ran (NFR-6). Parsing against two sentinels that differ
-    in every component surfaces that backfill as a disagreement.
-
-    dayfirst is pinned False (month-first: 03/04/2026 is March 4). It is
-    deliberately not configurable — a knob would let one corpus normalize two
-    ways depending on config, which is the ambiguity this is meant to remove.
-    """
-    try:
-        a = dateutil_parser.parse(value, default=_SENTINEL_A, dayfirst=False)
-        b = dateutil_parser.parse(value, default=_SENTINEL_B, dayfirst=False)
-    except (ValueError, OverflowError, TypeError) as exc:
-        raise ValueError(f"{value!r} is not a parseable date: {exc}") from exc
-    if a.date() != b.date():
-        raise ValueError(f"{value!r} does not specify a complete date")
-    return a.date()
-
-
 def normalize_meta_date(value, spec: "MetaDateConfig | None" = None) -> tuple[date, str]:
-    """Parse a rule meta value into (date, how_it_was_parsed).
+    """Parse a rule meta value into (date, matched_format).
 
     Tries DATE_FORMAT, then each spec.input_formats entry IN THE ORDER GIVEN —
     order is the documented tie-break for ambiguous formats, so it is a config
-    decision rather than a heuristic — then dateutil if spec.fuzzy_fallback.
+    decision rather than a heuristic. There is no fallback parser: a value that
+    matches nothing declared is unparsable, full stop.
 
-    The second element of the return is the format string that matched, or
-    'dateutil', so callers can record how a value was reinterpreted.
+    The second element of the return is the format string that matched, so
+    callers can record how a value was reinterpreted.
 
     Raises ValueError when nothing matches. With no spec this is ISO-only, i.e.
     exactly the behavior that predates the meta_dates config.
@@ -228,13 +206,8 @@ def normalize_meta_date(value, spec: "MetaDateConfig | None" = None) -> tuple[da
         except ValueError:
             continue
 
-    if spec.fuzzy_fallback:
-        return _dateutil_strict(value), "dateutil"
-
     tried = [DATE_FORMAT, *spec.input_formats]
-    raise ValueError(
-        f"{value!r} matches none of {tried} and fuzzy_fallback is off"
-    )
+    raise ValueError(f"{value!r} matches none of {tried}")
 
 
 def describe_accepted_dates(spec: "MetaDateConfig | None" = None) -> str:
@@ -245,8 +218,7 @@ def describe_accepted_dates(spec: "MetaDateConfig | None" = None) -> str:
     """
     spec = spec if spec is not None else MetaDateConfig()
     tried = [DATE_FORMAT, *spec.input_formats]
-    tail = " then dateutil" if spec.fuzzy_fallback else " (fuzzy_fallback off)"
-    return f"accepted formats {tried}{tail}"
+    return f"accepted formats {tried}"
 
 
 # ---------------------------------------------------------------------------
@@ -256,16 +228,21 @@ def describe_accepted_dates(spec: "MetaDateConfig | None" = None) -> str:
 
 @dataclass
 class MetaDateConfig:
-    """Which rule meta fields hold dates, and how to read them.
+    """Which rule meta fields hold dates, how to read them, and what an
+    unreadable one costs.
 
-    Empty `fields` disables the feature entirely: the lint check and the
-    manifest's normalization record both become no-ops.
+    Empty `fields` disables the feature entirely: the lint check, the drop step
+    and the manifest's normalization record all become no-ops.
+
+    on_unparsable is 'fail' (lint and the build both block) or 'warn_and_drop'
+    (offenders are logged and removed from the corpus before the filter phase).
+    'fail' is the default so an older build.yaml keeps its current behavior.
     """
     fields: list[str] = field(default_factory=list)
     input_formats: tuple[str, ...] = ()
-    fuzzy_fallback: bool = False
+    on_unparsable: str = "fail"
 
-    _ALLOWED = {"fields", "input_formats", "fuzzy_fallback"}
+    _ALLOWED = {"fields", "input_formats", "on_unparsable"}
 
     @classmethod
     def from_dict(cls, data, source: str) -> "MetaDateConfig":
@@ -305,8 +282,11 @@ class MetaDateConfig:
             # A tuple: hashable, and unmistakably ordered — order is the
             # tie-break for ambiguous formats.
             input_formats=tuple(formats),
-            fuzzy_fallback=_optional(data, "fuzzy_fallback", bool, source, False),
+            on_unparsable=_enum(
+                _optional(data, "on_unparsable", str, source, "fail"),
+                _UNPARSABLE_MODES, source, f"{ctx}.on_unparsable"),
         )
+
 
 @dataclass
 class BuildConfig:

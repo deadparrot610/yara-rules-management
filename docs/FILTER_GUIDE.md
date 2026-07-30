@@ -144,18 +144,19 @@ applies to rule input we don't control, never to policy we author.
 answers a `before: "2026-05-01"` bound correctly. Normalization is driven by `meta_dates` in
 `config/build.yaml`: ISO is tried first, then each `input_formats` entry **in the order listed**
 (that order is the tie-break for ambiguous values like `03/04/2026` — the shipped config reads
-month-first), then `dateutil` if `fuzzy_fallback` is on. Normalization happens at comparison
-time only; the rule's source text is emitted verbatim and is never rewritten.
+month-first). That list is the complete accepted set; there is no fallback parser, so nothing is
+guessed at. Normalization happens at comparison time only; the rule's source text is emitted
+verbatim and is never rewritten.
 
 Every non-ISO value that had to be reinterpreted is recorded in
-`dist/build_manifest.json` under `meta_date_normalizations`, with the format that matched. That
-is how a recurring vendor format gets promoted out of the `dateutil` fallback and pinned in
-`input_formats`.
+`dist/build_manifest.json` under `meta_date_normalizations`, with the format that matched.
 
 A rule that **lacks** the named field is simply not selected. A rule whose field is **present
-but unreadable** is a hard error — a typo'd date must not silently escape a filter. In practice
-`scripts/lint.py` catches these first and lists every offender at once; the filter engine's
-error is the backstop for a build run without lint.
+but unreadable** never reaches the filter engine: the build's unparsable-date gate runs first
+and, per `meta_dates.on_unparsable`, either fails the build or drops the rule. Drops are listed
+in the manifest under `dropped_unparsable_dates` — together with `meta_date_normalizations`,
+that is how a recurring vendor format earns a pinned entry in `input_formats`. `scripts/lint.py`
+reports the same offenders earlier and lists them all at once.
 
 ---
 
@@ -307,7 +308,11 @@ Fix it by including the dependency, or by also excluding the referring rule.
   malformed `meta_date` bounds fail fast with a sourced message.
 - **Lint also validates rule dates** — every field in `meta_dates.fields`, on every rule that
   carries it (vendor included), must be readable. This runs whether or not any `meta_date`
-  filter exists, so a bad vendor date can't lie dormant until the day you write one.
+  filter exists, so a bad vendor date can't lie dormant until the day you write one. It is an
+  error under `on_unparsable: fail` and a warning under `warn_and_drop`.
+- **A dropped date still faces the cross-checks** — under `warn_and_drop` the removed rules are
+  seeded into the exclusion record, so dropping an override rule whose superseded vendor rules
+  are gone blocks on the coverage-gap checkpoint exactly as an `exclude` filter would.
 - **`exclude` of an already-superseded vendor identifier is a harmless no-op** — the rule is
   already gone; it's recorded but not an error.
 - **`include` naming an identifier absent from the corpus matches nothing** — lint warns that

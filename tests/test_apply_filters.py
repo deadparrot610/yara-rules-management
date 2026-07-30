@@ -230,9 +230,8 @@ def test_meta_date_unparseable_value_raises():
 
 # --- selector matching: meta_date normalization ----------------------------
 
-def _meta_dates(*formats, fuzzy=False):
-    return MetaDateConfig(
-        fields=["date"], input_formats=tuple(formats), fuzzy_fallback=fuzzy)
+def _meta_dates(*formats):
+    return MetaDateConfig(fields=["date"], input_formats=tuple(formats))
 
 
 def test_meta_date_normalizes_non_iso_rule_value():
@@ -243,12 +242,15 @@ def test_meta_date_normalizes_non_iso_rule_value():
     assert action == "exclude"
 
 
-def test_meta_date_normalizes_via_fuzzy_fallback():
+def test_meta_date_undeclared_format_is_not_guessed_at():
+    # No fallback parser: a value the config doesn't declare raises rather than
+    # being interpreted. In a real build the unparsable-date gate has already
+    # failed or dropped it; this is the filter engine's backstop.
     rule = _dated("Foo", "April 18, 2026")
-    action, _ = apply_filters._resolve_rule(
-        rule, [_date_filter(before=date(2026, 5, 1))], "include_all",
-        _meta_dates(fuzzy=True))
-    assert action == "exclude"
+    with pytest.raises(PipelineError, match="not a recognized date"):
+        apply_filters._resolve_rule(
+            rule, [_date_filter(before=date(2026, 5, 1))], "include_all",
+            _meta_dates("%m/%d/%Y"))
 
 
 def test_meta_date_without_config_stays_iso_only():
@@ -283,7 +285,7 @@ def test_meta_date_error_names_the_accepted_formats():
 def test_run_threads_meta_dates_from_config(tmp_path):
     # The acceptance path: config -> run -> selector, with nothing normalized in
     # between and no rule source touched.
-    rules = [_dated("Old", "04/16/2026"), _dated("New", "July 13, 2026")]
+    rules = [_dated("Old", "04/16/2026"), _dated("New", "20260713")]
     policy = FilterPolicy(
         default_mode="include_all",
         min_output_rules=0,
@@ -291,7 +293,7 @@ def test_run_threads_meta_dates_from_config(tmp_path):
                          match=FilterMatch(meta_date=FilterDateRange(
                              field="date", before=date(2026, 5, 1))))],
     )
-    config = _config(meta_dates=_meta_dates("%m/%d/%Y", fuzzy=True))
+    config = _config(meta_dates=_meta_dates("%m/%d/%Y", "%Y%m%d"))
     included, exclusion_record = apply_filters.run(
         rules, policy, tmp_path, [], config)
     assert [r.identifier for r in included] == ["New"]
@@ -405,3 +407,60 @@ def test_run_filter_exclusion_carries_filter_id(tmp_path):
     assert exclusion_record == [
         {"identifier": "Drop", "filter_id": "drop-filter", "reason": ""}
     ]
+
+
+# --- pre_excluded (unparsable-date drops) ----------------------------------
+
+def _drop_record(identifier):
+    return {"identifier": identifier, "filter_id": None,
+            "reason": "unparsable date: date='whenever'"}
+
+
+def test_pre_excluded_records_reach_the_exclusion_record(tmp_path):
+    rules = [make_rule("Keep", origin="vendor")]
+    policy = FilterPolicy(default_mode="include_all", min_output_rules=0)
+    included, exclusion_record = apply_filters.run(
+        rules, policy, tmp_path, [], _config(), pre_excluded=[_drop_record("Dropped")])
+    assert [r.identifier for r in included] == ["Keep"]
+    assert [r["identifier"] for r in exclusion_record] == ["Dropped"]
+
+
+def test_pre_excluded_override_trips_the_coverage_gap_checkpoint(tmp_path):
+    # The reason drops are threaded through run() at all: removing an override
+    # whose superseded vendor rules are already gone leaves neither detection,
+    # and that must block regardless of *why* the override went away.
+    manifest = [OverrideEntry(override_rule="ov", supersedes=["gone_vendor"])]
+    policy = FilterPolicy(default_mode="include_all", min_output_rules=0)
+    with pytest.raises(PipelineError, match="coverage gap checkpoint"):
+        apply_filters.run([], policy, tmp_path, manifest, _config(),
+                          pre_excluded=[_drop_record("ov")])
+
+
+def test_pre_excluded_override_unblocked_by_wildcard_decision(tmp_path):
+    # A drop has no responsible filter, so its decision key is the (rule, None)
+    # wildcard that lookup_decision already supports.
+    manifest = [OverrideEntry(override_rule="ov", supersedes=["gone_vendor"])]
+    _write_gap_decisions(tmp_path / "coverage_gap_decisions.yaml", [
+        {"override_rule": "ov", "decision": "keep"},
+    ])
+    policy = FilterPolicy(default_mode="include_all", min_output_rules=0)
+    apply_filters.run([], policy, tmp_path, manifest, _config(),
+                      pre_excluded=[_drop_record("ov")])  # no raise
+
+
+def test_pre_excluded_rule_still_referenced_is_an_error(tmp_path):
+    included = make_rule("Uses", origin="custom",
+                         condition_terms=["Dropped", "and", "$x"])
+    policy = FilterPolicy(default_mode="include_all", min_output_rules=0)
+    with pytest.raises(PipelineError, match="referential integrity"):
+        apply_filters.run([included], policy, tmp_path, [], _config(),
+                          pre_excluded=[_drop_record("Dropped")])
+
+
+def test_pre_excluded_drops_count_against_the_floor(tmp_path):
+    rules = [make_rule("Keep", origin="vendor")]
+    policy = FilterPolicy(default_mode="include_all", min_output_rules=2,
+                          on_empty_output="fail")
+    with pytest.raises(PipelineError, match="below min_output_rules"):
+        apply_filters.run(rules, policy, tmp_path, [], _config(),
+                          pre_excluded=[_drop_record("Dropped")])
