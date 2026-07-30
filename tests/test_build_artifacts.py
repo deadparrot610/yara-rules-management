@@ -52,12 +52,12 @@ def test_manifest_counts_and_removals(built):
     assert manifest["removed_vendor_rules"] == ["vendor_override"]
 
 
-def test_manifest_records_meta_date_normalizations(built):
+def test_manifest_omits_meta_date_normalizations(built):
     _, manifest_path = built
     manifest = json.loads(manifest_path.read_text())
-    # Present unconditionally so a consumer can rely on the key; empty here
-    # because the committed corpus is entirely ISO.
-    assert manifest["meta_date_normalizations"] == []
+    # Reinterpreted dates are advisory and go to the build log only — one entry
+    # per rule per date field would swamp the manifest for no consumer's benefit.
+    assert "meta_date_normalizations" not in manifest
 
 
 def test_manifest_records_dropped_unparsable_dates(built):

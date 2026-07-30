@@ -299,7 +299,6 @@ def write_manifest(
     exclusion_record: list[dict],
     source_files: list[Path],
     dest: Path,
-    normalizations: list[dict] | None = None,
     date_drops: list[dict] | None = None,
 ) -> None:
     counts = {origin: sum(1 for r in rules if r.origin == origin)
@@ -321,10 +320,6 @@ def write_manifest(
             "overrides": counts["overrides"],
         },
         "removed_vendor_rules": removed_ids,
-        # Rule dates that were not already ISO and had to be reinterpreted. The
-        # rule source ships verbatim, so this is the only record that it happened.
-        # [] when clean.
-        "meta_date_normalizations": normalizations or [],
         # Rules removed by the unparsable-date gate under on_unparsable:
         # warn_and_drop. Always [] under 'fail', which raises instead. This is
         # how a recurring vendor format earns a place in meta_dates.input_formats.
@@ -424,14 +419,31 @@ def build(root: Path) -> tuple[list[RuleRecord], list[str], list[dict], Path]:
     dist.mkdir(exist_ok=True)
     output_path.write_text(merged_source)
 
-    # --- Write manifest ---
-    # Computed on the final ordered list so the record describes what shipped,
-    # not what was parsed. There are no offenders left to report here: check_dates
-    # above either raised or removed every one of them.
+    # --- Report reinterpreted dates ---
+    # Computed on the final ordered list so the report describes what shipped, not
+    # what was parsed. There are no offenders left to find here: check_dates above
+    # either raised or removed every one of them. Advisory only, and deliberately
+    # not in the manifest — the rule source ships verbatim, so this log is the only
+    # record that a value was reinterpreted, and a format recurring here is the
+    # signal that it belongs in meta_dates.input_formats.
     normalizations, _ = meta_date_findings(ordered, config.meta_dates)
+    if normalizations:
+        lines = [
+            f"{len(normalizations)} rule date(s) reinterpreted from a non-ISO format "
+            f"(a recurring format belongs in config/build.yaml meta_dates.input_formats):",
+            "",
+        ]
+        lines += [
+            f"  {n['identifier']} {n['field']} {n['raw']!r} → {n['normalized']} "
+            f"via {n['via']}"
+            for n in normalizations
+        ]
+        logger.info("\n".join(lines))
+
+    # --- Write manifest ---
     write_manifest(ordered, removed_ids, exclusion_record,
                    corpus_data.source_files, dist / "build_manifest.json",
-                   normalizations, date_drops)
+                   date_drops)
 
     return ordered, removed_ids, exclusion_record, output_path
 

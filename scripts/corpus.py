@@ -206,8 +206,9 @@ def meta_date_findings(
 
     normalizations records values that parsed but were *not* already ISO —
     {"identifier", "field", "raw", "normalized", "via"} — i.e. the audit trail of
-    every value the pipeline reinterpreted. This is the only visible record of
-    that reinterpretation, since the rule source itself is emitted verbatim.
+    every value the pipeline reinterpreted. The build logs these; since the rule
+    source itself is emitted verbatim, that log is the only visible record of the
+    reinterpretation.
 
     offenders are (rule, field, raw_value) triples nothing could parse.
 
@@ -217,8 +218,8 @@ def meta_date_findings(
 
     The single definition of "an unreadable rule date" shared by the lint gate
     (scripts/lint.py) and the build gate (scripts/build_ruleset.py). Results are
-    sorted by (identifier, field) so the manifest is byte-identical across runs
-    on identical input (NFR-6).
+    sorted by (identifier, field) so both lists read identically across runs on
+    identical input (NFR-6).
     """
     normalizations: list[dict] = []
     offenders: list[tuple[RuleRecord, str, object]] = []
