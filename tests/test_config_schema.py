@@ -162,15 +162,32 @@ def test_meta_dates_rejects_format_that_loses_the_date(bad):
         BuildConfig.from_dict(data, SRC)
 
 
-@pytest.mark.parametrize("bad", ["%d-%b-%Y", "%B %d, %Y", "%a %Y-%m-%d"])
+@pytest.mark.parametrize(
+    "bad", ["%d-%b-%Y", "%B %d, %Y", "%a %Y-%m-%d", "%Y-%m-%d %Z"])
 def test_meta_dates_rejects_locale_dependent_format(bad):
-    # strptime month/day names follow LC_TIME, which would make lint results
-    # machine-dependent. There is no looser parser to fall back to, so such a
-    # value is simply unparsable and on_unparsable decides its fate.
+    # strptime month/day/timezone NAMES follow LC_TIME and the platform's tz
+    # database, which would make lint results machine-dependent. There is no
+    # looser parser to fall back to, so such a value is simply unparsable and
+    # on_unparsable decides its fate.
     data = _valid_build_dict()
     data["meta_dates"] = {"input_formats": [bad]}
     with pytest.raises(ConfigError, match="locale-dependent"):
         BuildConfig.from_dict(data, SRC)
+
+
+@pytest.mark.parametrize("fmt", [
+    "%m/%d/%Y %H:%M",
+    "%Y%m%d%H%M%S",
+    "%Y-%m-%dT%H:%M:%S%z",     # numeric offset: unambiguous, unlike %Z
+    "%Y-%m-%dT%H:%M:%S.%f",
+])
+def test_meta_dates_accepts_time_bearing_format(fmt):
+    # The validate_date_format probe is an *aware datetime* precisely so these
+    # round-trip; a naive date renders %z as '' and would reject the third case.
+    data = _valid_build_dict()
+    data["meta_dates"] = {"input_formats": [fmt]}
+    cfg = BuildConfig.from_dict(data, SRC)
+    assert cfg.meta_dates.input_formats == (fmt,)
 
 
 def test_build_config_real_file_meta_dates(root):
@@ -245,12 +262,14 @@ def test_normalize_without_spec_is_iso_only():
         "29-Jul-2026",
         "July 2026",       # incomplete: a lenient parser would backfill the day
         "2026",
-        "2026-07-13T00:00:00",
+        "2026-W01-1",      # ISO week date: fromisoformat reads it, we don't
+        "14:22:01",        # time with no date at all
     ],
 )
 def test_undeclared_formats_do_not_parse(undeclared):
     # The whole point of dropping the fallback: a value only parses if the config
-    # says so. Everything else is unparsable, and on_unparsable decides its fate.
+    # says so (or it is a plain ISO date/datetime). Everything else is
+    # unparsable, and on_unparsable decides its fate.
     with pytest.raises(ValueError, match="matches none of"):
         config_schema.normalize_meta_date(undeclared, _spec("%m/%d/%Y", "%Y%m%d"))
 
@@ -262,7 +281,71 @@ def test_error_names_every_format_tried():
 
 def test_describe_accepted_dates_lists_iso_first():
     text = config_schema.describe_accepted_dates(_spec("%m/%d/%Y"))
-    assert text == "accepted formats ['%Y-%m-%d', '%m/%d/%Y']"
+    assert text == (
+        "accepted formats ['%Y-%m-%d', '%m/%d/%Y'], or an ISO 8601 date+time")
+
+
+# --- ISO 8601 date+time ----------------------------------------------------
+
+@pytest.mark.parametrize("value", [
+    "2026-07-13T14:22:01",
+    "2026-07-13 14:22:01",       # space separator, as many feeds write it
+    "2026-07-13T14:22:01Z",
+    "2026-07-13T14:22:01+05:00",
+    "2026-07-13T14:22:01.123456",
+    "2026-07-13T14:22",
+])
+def test_iso_datetime_truncates_to_its_date(value):
+    # Always accepted, never declared: an ISO datetime is still ISO, so no
+    # input_formats entry should have to compete with it.
+    parsed, via = config_schema.normalize_meta_date(value, _spec("%m/%d/%Y"))
+    assert parsed == date(2026, 7, 13)
+    assert via == config_schema.ISO_DATETIME
+
+
+def test_iso_datetime_offset_is_ignored_not_converted():
+    # 22:00 on the 3rd at -06:00 is the 4th in UTC. We report the date as
+    # written: converting would move the value to another day based on an offset
+    # the rule author chose, which is not what a meta_date bound is asking.
+    parsed, _ = config_schema.normalize_meta_date(
+        "2026-05-03T22:00:00-06:00", _spec())
+    assert parsed == date(2026, 5, 3)
+
+
+def test_iso_datetime_never_depends_on_machine_timezone(monkeypatch):
+    # No astimezone, no localtime — the same string must read the same anywhere.
+    results = []
+    for tz in ("UTC", "America/Los_Angeles", "Pacific/Kiritimati"):
+        monkeypatch.setenv("TZ", tz)
+        results.append(
+            config_schema.normalize_meta_date("2026-05-03T22:00:00-06:00", _spec()))
+    assert results == [(date(2026, 5, 3), config_schema.ISO_DATETIME)] * 3
+
+
+@pytest.mark.parametrize("value,expected_via", [
+    ("2026-07-13", "%Y-%m-%d"),   # plain ISO keeps reporting ISO
+    ("20260713", "%Y%m%d"),       # basic-format date belongs to the config entry
+])
+def test_date_only_values_are_not_annexed_by_the_datetime_path(value, expected_via):
+    # date.fromisoformat reads both of these, which is exactly why the datetime
+    # step is guarded — otherwise '20260713' would report ISO_DATETIME and the
+    # configured '%Y%m%d' entry would be silently dead.
+    _, via = config_schema.normalize_meta_date(value, _spec("%Y%m%d"))
+    assert via == expected_via
+
+
+def test_declared_non_iso_datetime_format_truncates():
+    parsed, via = config_schema.normalize_meta_date(
+        "07/13/2026 14:22", _spec("%m/%d/%Y %H:%M"))
+    assert parsed == date(2026, 7, 13)
+    assert via == "%m/%d/%Y %H:%M"
+
+
+def test_policy_bounds_stay_iso_date_only():
+    # parse_iso_date backs filter_policy bounds, which we author. A timestamp
+    # there is a typo, not a vendor quirk to tolerate.
+    with pytest.raises(ValueError):
+        config_schema.parse_iso_date("2026-07-13T14:22:01Z")
 
 
 # --- bool-is-not-int guard ------------------------------------------------

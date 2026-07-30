@@ -13,7 +13,7 @@ load config through the load_* functions here.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import yaml
@@ -118,6 +118,9 @@ def _no_unknown_keys(data: dict, allowed: set, source: str, context: str):
 # Canonical date format for meta_date bounds and rule `date` meta values.
 DATE_FORMAT = "%Y-%m-%d"
 
+# Reported as the `via` of a rule value that parsed as an ISO 8601 date+time.
+ISO_DATETIME = "ISO 8601 datetime"
+
 
 def parse_iso_date(value) -> date:
     """Parse a YYYY-MM-DD string into a date. Raises ValueError on any other
@@ -135,16 +138,30 @@ def parse_iso_date(value) -> date:
 # (filter policy bounds), and a vendor's sloppy format must never become legal
 # there. The functions below read values arriving in rule meta fields, which we
 # do not control and are forbidden to rewrite. They are strict: a value parses
-# only against ISO or a format the config explicitly declares. Anything else is
-# an unparsable date, and meta_dates.on_unparsable decides what happens to it.
+# only against ISO 8601 (date or date+time) or a format the config explicitly
+# declares. Anything else is an unparsable date, and meta_dates.on_unparsable
+# decides what happens to it.
+#
+# A time component is truncated to its date, and a UTC offset is IGNORED rather
+# than converted: '2026-05-03T22:00:00-06:00' is 2026-05-03, the date a human
+# reading the rule sees. Converting would move the value to another day based on
+# an offset the rule author chose, which is not a distinction a meta_date filter
+# bound is trying to draw.
 # ---------------------------------------------------------------------------
 
-# strptime directives whose text is locale-dependent. A format using one would
-# parse under LC_ALL=C and fail under e.g. de_DE, making lint results depend on
-# the machine (NFR-6), so they are not accepted in input_formats at all. A rule
-# date written with month or day names is therefore unparsable by design and is
-# handled by on_unparsable rather than by a looser parser.
-_LOCALE_DIRECTIVES = ("%a", "%A", "%b", "%B", "%p")
+# strptime directives whose text is locale- or platform-dependent. A format using
+# one would parse under LC_ALL=C and fail under e.g. de_DE, making lint results
+# depend on the machine (NFR-6), so they are not accepted in input_formats at
+# all. A rule date written with month, day or timezone *names* is therefore
+# unparsable by design and is handled by on_unparsable rather than by a looser
+# parser. '%z' (numeric offset) is deliberately absent — it is unambiguous.
+_LOCALE_DIRECTIVES = ("%a", "%A", "%b", "%B", "%p", "%Z")
+
+# Round-trip probe for validate_date_format. Deliberately an *aware datetime*
+# rather than a date: a naive date renders '%z' as the empty string, so an
+# offset-bearing format like '%Y-%m-%dT%H:%M:%S%z' would fail to round-trip and
+# be rejected as unusable, even though it parses real vendor values correctly.
+_FORMAT_PROBE = datetime(2026, 7, 13, 14, 22, 1, tzinfo=timezone(timedelta(hours=5)))
 
 
 def validate_date_format(fmt: str) -> None:
@@ -152,33 +169,63 @@ def validate_date_format(fmt: str) -> None:
 
     Rejects bogus directives ('%q') and lossy ones ('%b %Y', which would silently
     normalize every value to the 1st of the month), plus locale-dependent ones.
+    Time directives are fine — the time is truncated, not lost to ambiguity.
     """
     for directive in _LOCALE_DIRECTIVES:
         if directive in fmt:
             raise ValueError(
                 f"contains locale-dependent directive {directive!r}, which would "
-                f"make parsing depend on the machine's locale; month- and "
-                f"day-name input is not supported"
+                f"make parsing depend on the machine's locale; month-, day- and "
+                f"timezone-name input is not supported"
             )
-    probe = date(2026, 7, 13)
     try:
-        parsed = datetime.strptime(probe.strftime(fmt), fmt).date()
+        parsed = datetime.strptime(_FORMAT_PROBE.strftime(fmt), fmt).date()
     except (ValueError, TypeError, IndexError) as exc:
         raise ValueError(f"is not a usable strptime format: {exc}") from exc
-    if parsed != probe:
+    if parsed != _FORMAT_PROBE.date():
         raise ValueError("does not round-trip a full date (year, month and day)")
+
+
+def _iso_datetime_date(value: str) -> date | None:
+    """The date of an ISO 8601 value that carries a TIME component, else None.
+
+    Covers what vendor feeds actually emit — 'T' and space separators, trailing
+    'Z', numeric offsets, fractional seconds — in one stdlib parser rather than
+    one input_formats entry per combination.
+
+    The date-only guard is load-bearing. datetime.fromisoformat also accepts
+    date-only input, including basic '20260503' and week dates like '2026-W01-1',
+    so calling it unguarded would annex values the existing paths already own
+    ('20260503' is matched by a configured '%Y%m%d' and must keep reporting that)
+    and quietly widen the accepted set past what anyone declared. If
+    date.fromisoformat can read the value, it is not ours.
+
+    .date() on an aware datetime is the wall-clock date as written — the
+    offset-ignored contract described above, with nothing that varies by machine.
+    """
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        pass
+    else:
+        return None
+    try:
+        return datetime.fromisoformat(value).date()
+    except ValueError:
+        return None
 
 
 def normalize_meta_date(value, spec: "MetaDateConfig | None" = None) -> tuple[date, str]:
     """Parse a rule meta value into (date, matched_format).
 
-    Tries DATE_FORMAT, then each spec.input_formats entry IN THE ORDER GIVEN —
-    order is the documented tie-break for ambiguous formats, so it is a config
-    decision rather than a heuristic. There is no fallback parser: a value that
-    matches nothing declared is unparsable, full stop.
+    Tries DATE_FORMAT, then ISO 8601 date+time, then each spec.input_formats
+    entry IN THE ORDER GIVEN — order is the documented tie-break for ambiguous
+    formats, so it is a config decision rather than a heuristic. There is no
+    fallback parser: a value that matches nothing declared is unparsable, full
+    stop.
 
-    The second element of the return is the format string that matched, so
-    callers can record how a value was reinterpreted.
+    The second element of the return is the format string that matched, or
+    ISO_DATETIME, so callers can record how a value was reinterpreted.
 
     Raises ValueError when nothing matches. With no spec this is ISO-only, i.e.
     exactly the behavior that predates the meta_dates config.
@@ -200,6 +247,12 @@ def normalize_meta_date(value, spec: "MetaDateConfig | None" = None) -> tuple[da
     except ValueError:
         pass
 
+    # Before input_formats: a timestamped ISO value is still ISO, and no config
+    # entry should have to compete with it.
+    timestamped = _iso_datetime_date(value)
+    if timestamped is not None:
+        return timestamped, ISO_DATETIME
+
     for fmt in spec.input_formats:
         try:
             return datetime.strptime(value, fmt).date(), fmt
@@ -207,7 +260,7 @@ def normalize_meta_date(value, spec: "MetaDateConfig | None" = None) -> tuple[da
             continue
 
     tried = [DATE_FORMAT, *spec.input_formats]
-    raise ValueError(f"{value!r} matches none of {tried}")
+    raise ValueError(f"{value!r} matches none of {tried} (nor ISO 8601 date+time)")
 
 
 def describe_accepted_dates(spec: "MetaDateConfig | None" = None) -> str:
@@ -218,7 +271,10 @@ def describe_accepted_dates(spec: "MetaDateConfig | None" = None) -> str:
     """
     spec = spec if spec is not None else MetaDateConfig()
     tried = [DATE_FORMAT, *spec.input_formats]
-    return f"accepted formats {tried}"
+    # The ISO date+time clause keeps this truthful: the accepted set is wider
+    # than the format list, and an error that omitted it would send a reader
+    # looking for a config entry that was never needed.
+    return f"accepted formats {tried}, or an ISO 8601 date+time"
 
 
 # ---------------------------------------------------------------------------

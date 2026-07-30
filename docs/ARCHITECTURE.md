@@ -271,19 +271,34 @@ required_meta: [author, date, description, reference, severity]
 meta_dates:                          # date-valued meta fields + how to read them
   fields: [date]
   input_formats: ["%m/%d/%Y", "%Y/%m/%d", "%Y%m%d"]   # tried in order after ISO
+                                     # (may carry time directives; ISO 8601
+                                     #  date+time is always accepted)
   on_unparsable: fail                # or warn_and_drop
 ```
 
 **Rule dates.** Vendor feeds do not all write `YYYY-MM-DD`, and the rule source is committed as
 received, so the pipeline normalizes at read time rather than rewriting files. `meta_dates`
-governs it: ISO first, then each `input_formats` entry **in the listed order** (the order is the
-tie-break for ambiguous values such as `03/04/2026`; the shipped config is month-first). That
-list is the complete accepted set — there is no fallback parser, so a value matching nothing in
-it is unparsable rather than guessed at. `input_formats` also rejects locale-dependent
-directives (`%b`/`%B`/`%a`/`%A`) because `strptime` resolves those against `LC_TIME`, which
-would make results machine-dependent (NFR-6); a date written with month names is therefore
-unparsable by design. Values that were reinterpreted from a non-ISO format are listed in the
-build manifest under `meta_date_normalizations`.
+governs it: `%Y-%m-%d` first, then any **ISO 8601 date+time**, then each `input_formats` entry
+**in the listed order** (the order is the tie-break for ambiguous values such as `03/04/2026`;
+the shipped config is month-first). Beyond ISO, that list is the complete accepted set — there
+is no fallback parser, so a value matching nothing in it is unparsable rather than guessed at.
+`input_formats` also rejects locale- and platform-dependent directives (`%b`/`%B`/`%a`/`%A`/`%Z`)
+because `strptime` resolves those against `LC_TIME`, which would make results machine-dependent
+(NFR-6); a date written with month names is therefore unparsable by design. Values that were
+reinterpreted from a non-ISO format are listed in the build manifest under
+`meta_date_normalizations`.
+
+**Times and offsets.** A value carrying a time is truncated to its date, and a UTC offset is
+**ignored rather than converted**: `2026-05-03T22:00:00-06:00` compares as `2026-05-03`, the
+date a human reading the rule sees. Converting to UTC would move the value to another day based
+on an offset the rule author chose, which is not a distinction a `meta_date` bound is drawing.
+The ISO date+time step is `datetime.fromisoformat`, guarded by `date.fromisoformat` so that
+date-only values (including basic `20260503` and ISO week dates) fall through to the paths that
+already own them instead of being annexed. `input_formats` entries may carry time directives as
+well (`%m/%d/%Y %H:%M`); `validate_date_format` round-trips candidates against an *aware
+datetime* probe, without which an offset-bearing `%z` format could never validate. Policy bounds
+in `filters/filter_policy.yaml` remain strict ISO **date**-only — `parse_iso_date` is untouched,
+because leniency is for input we don't control, not config we author.
 
 **`on_unparsable`** decides what an unreadable date costs. Under `fail` (the default) lint
 errors and the build blocks before any artifact is written. Under `warn_and_drop` every offender

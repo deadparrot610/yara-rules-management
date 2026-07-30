@@ -206,6 +206,14 @@ def test_lint_dates_normalizable_value_passes():
     assert lint.lint_dates([rule], _date_config("%m/%d/%Y"), REPO) == ([], [])
 
 
+def test_lint_dates_timestamped_value_passes():
+    # The case this widening exists for: a vendor feed that stamps a time is no
+    # longer a lint finding, with no config entry required.
+    rule = make_rule("vendor_rule", origin="vendor",
+                     meta={"date": "2026-07-13T14:22:01Z"})
+    assert lint.lint_dates([rule], _date_config("%m/%d/%Y"), REPO) == ([], [])
+
+
 def test_lint_dates_applies_to_vendor_origin():
     # The load-bearing contrast with test_vendor_rule_exempt_from_meta: vendor is
     # exempt from *completeness* but not from readability, and the vendor feed is

@@ -82,7 +82,9 @@ Every **custom and override** rule must carry: `author`, `date`, `description`, 
 
 `meta_dates` in `config/build.yaml` declares which meta fields hold dates (`fields`), which non-ISO formats to accept (`input_formats`, tried **in the listed order** after ISO — order is the ambiguity tie-break, and the shipped config is month-first), and what an unreadable date costs (`on_unparsable`).
 
-**Parsing is strict.** `input_formats` is the complete accepted set — there is no fallback parser, and locale-dependent directives (`%b`/`%B`/`%a`/`%A`/`%p`) are rejected outright because `strptime` resolves them against `LC_TIME`, which would make results machine-dependent (NFR-6). A date written with month names is unparsable by design.
+**Parsing is strict.** ISO 8601 is always accepted — `%Y-%m-%d` first, then any ISO date+time (`T` or space separator, `Z`, numeric offsets, fractional seconds) via `datetime.fromisoformat`, guarded by `date.fromisoformat` so date-only values keep reporting the format that actually matched. Beyond that, `input_formats` is the complete accepted set: no fallback parser, and locale- or platform-dependent directives (`%b`/`%B`/`%a`/`%A`/`%p`/`%Z`) are rejected outright because `strptime` resolves them against `LC_TIME`, which would make results machine-dependent (NFR-6). A date written with month names is unparsable by design; numeric `%z` is fine.
+
+**Time components are truncated, offsets ignored.** `2026-05-03T22:00:00-06:00` is `2026-05-03` — the date as written, never converted to another day. `input_formats` entries may carry time directives too (`%m/%d/%Y %H:%M`); `validate_date_format` round-trips them against an *aware datetime* probe, which is what makes `%z`-bearing entries validate at all.
 
 Two separate concerns, deliberately not merged: `required_meta` is about **completeness** and exempts vendor; `lint_dates` is about **readability** and applies to every origin, firing only when a configured field is present and unparseable. Vendor is the reason it exists.
 

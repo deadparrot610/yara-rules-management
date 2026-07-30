@@ -14,15 +14,25 @@ required_meta: [author, date, description, reference, severity]
 meta_dates:
   fields: [date]
 
-  # The COMPLETE set of accepted non-ISO formats (strptime), TRIED IN THE ORDER
-  # LISTED. "%Y-%m-%d" is always tried first and must not appear here. Order is
-  # the tie-break for ambiguous values: with "%m/%d/%Y" before "%d/%m/%Y",
-  # "03/04/2026" is March 4. There is no fallback parser — a value matching
-  # nothing listed here is unparsable, and on_unparsable below decides its fate.
+  # The COMPLETE set of accepted NON-ISO formats (strptime), TRIED IN THE ORDER
+  # LISTED. Order is the tie-break for ambiguous values: with "%m/%d/%Y" before
+  # "%d/%m/%Y", "03/04/2026" is March 4. There is no fallback parser — a value
+  # matching neither ISO nor an entry here is unparsable, and on_unparsable
+  # below decides its fate.
   #
-  # Month- and day-name directives (%b/%B/%a/%A) are rejected: strptime reads
-  # them against the machine's locale, which would make results depend on where
-  # the build ran (NFR-6). A vendor date like "July 29, 2026" is unparsable.
+  # ISO 8601 is ALWAYS accepted and must not be listed: "%Y-%m-%d" first, then
+  # any ISO date+time — "2026-07-29T14:22:01Z", "2026-07-29 14:22:01", numeric
+  # offsets, fractional seconds. Entries here may carry time directives too
+  # (e.g. "%m/%d/%Y %H:%M") for feeds that timestamp in a non-ISO shape.
+  #
+  # A time component is truncated to its date, and a UTC offset is IGNORED
+  # rather than converted: "2026-07-29T22:00:00-06:00" is July 29, the date a
+  # human reading the rule sees.
+  #
+  # Month-, day- and timezone-NAME directives (%b/%B/%a/%A/%Z) are rejected:
+  # strptime reads them against the machine's locale, which would make results
+  # depend on where the build ran (NFR-6). A vendor date like "July 29, 2026"
+  # is unparsable. Numeric %z is fine — it is unambiguous.
   #
   # Kept deliberately short: every unparsable value is named in the lint/build
   # output and every non-ISO parse is recorded in the build manifest, so a real
@@ -32,6 +42,8 @@ meta_dates:
     - "%m/%d/%Y"      # 07/29/2026  (month-first)
     - "%Y/%m/%d"      # 2026/07/29
     - "%Y%m%d"        # 20260729
+  # - "%m/%d/%Y %H:%M"        # 07/29/2026 14:22
+  # - "%m/%d/%Y %H:%M:%S %z"  # 07/29/2026 14:22:01 -0500
 
   # What an unparsable date costs:
   #   fail          — lint errors and the build blocks. No artifact is written.

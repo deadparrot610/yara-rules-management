@@ -1,5 +1,6 @@
 """Tests for the shared corpus primitives."""
 
+import config_schema
 import corpus
 from config_schema import MetaDateConfig, OverrideEntry
 from conftest import make_rule
@@ -104,6 +105,18 @@ def test_meta_date_findings_records_only_non_iso():
     assert normalizations == [{
         "identifier": "Other", "field": "date", "raw": "07/13/2026",
         "normalized": "2026-07-13", "via": "%m/%d/%Y",
+    }]
+
+
+def test_meta_date_findings_records_a_truncated_timestamp():
+    # The rule source ships verbatim, so this record is the only trace that a
+    # time component was discarded.
+    rule = make_rule("Stamped", meta={"date": "2026-07-13T14:22:01Z"})
+    normalizations, offenders = corpus.meta_date_findings([rule], _meta_dates())
+    assert offenders == []
+    assert normalizations == [{
+        "identifier": "Stamped", "field": "date", "raw": "2026-07-13T14:22:01Z",
+        "normalized": "2026-07-13", "via": config_schema.ISO_DATETIME,
     }]
 
 

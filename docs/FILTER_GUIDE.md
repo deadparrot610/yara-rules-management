@@ -142,11 +142,16 @@ applies to rule input we don't control, never to policy we author.
 
 **Rule values are normalized first.** A vendor feed that writes `date = "04/18/2026"` still
 answers a `before: "2026-05-01"` bound correctly. Normalization is driven by `meta_dates` in
-`config/build.yaml`: ISO is tried first, then each `input_formats` entry **in the order listed**
-(that order is the tie-break for ambiguous values like `03/04/2026` — the shipped config reads
-month-first). That list is the complete accepted set; there is no fallback parser, so nothing is
-guessed at. Normalization happens at comparison time only; the rule's source text is emitted
-verbatim and is never rewritten.
+`config/build.yaml`: `%Y-%m-%d` is tried first, then any ISO 8601 date+time, then each
+`input_formats` entry **in the order listed** (that order is the tie-break for ambiguous values
+like `03/04/2026` — the shipped config reads month-first). Beyond ISO that list is the complete
+accepted set; there is no fallback parser, so nothing is guessed at. Normalization happens at
+comparison time only; the rule's source text is emitted verbatim and is never rewritten.
+
+**A timestamped date answers on its date part.** `date = "2026-04-18T22:00:00-06:00"` is
+compared as `2026-04-18` — the time is truncated and the offset ignored, never converted to
+another day. Non-ISO timestamps work too once declared (`"%m/%d/%Y %H:%M"`). Bounds in this
+policy stay strict ISO **date**-only: a bound with a time in it is a `ConfigError` at load.
 
 Every non-ISO value that had to be reinterpreted is recorded in
 `dist/build_manifest.json` under `meta_date_normalizations`, with the format that matched.

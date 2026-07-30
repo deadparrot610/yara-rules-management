@@ -242,6 +242,14 @@ def test_meta_date_normalizes_non_iso_rule_value():
     assert action == "exclude"
 
 
+def test_meta_date_compares_a_timestamped_value_on_its_date():
+    # No input_formats entry needed — an ISO datetime is accepted by the ISO step.
+    rule = _dated("Foo", "2026-04-18T22:00:00-06:00")
+    action, _ = apply_filters._resolve_rule(
+        rule, [_date_filter(before=date(2026, 5, 1))], "include_all", _meta_dates())
+    assert action == "exclude"
+
+
 def test_meta_date_undeclared_format_is_not_guessed_at():
     # No fallback parser: a value the config doesn't declare raises rather than
     # being interpreted. In a real build the unparsable-date gate has already
