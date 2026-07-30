@@ -247,7 +247,7 @@ Sequence:
 10. **Order** the emitted rules so dependencies resolve (see §6): vendor-remainder → overrides → custom, with topological adjustment if intra-set references exist.
 11. **Compile** the merged-and-filtered corpus (as an in-memory string) with `yara-python` as the authoritative validation gate (FR-7). Compilation is non-negotiable even when only source output is requested — it is how "the ruleset is valid" is proven, and it runs before anything is written to `dist/` so no unvalidated artifact ever exists on disk.
 12. **Emit** `dist/merged_rules.yara` (source only; D-2 — `output_formats` values other than `source` are rejected at the start of the build).
-13. **Write** `dist/build_manifest.json`: rule counts by source, overridden/removed vendor identifiers, **filtered-out rules with responsible filter id and reason**, dropped rule dates (`dropped_unparsable_dates`), per-source-file SHA-256, tool/engine versions, and build version. Reinterpreted dates are *not* in the manifest — the build logs them instead (§6), since one entry per rule per date field would bury the rest.
+13. **Write** `dist/build_manifest.json`: rule counts by source, overridden/removed vendor identifiers, **filtered-out rules with responsible filter id and reason**, dropped rule dates (`dropped_unparsable_dates`), per-source-file SHA-256, tool/engine versions, and build version. Reinterpreted dates are *not* recorded — see §6.
 
 ## 6. Rule ordering, modules, and external variables
 
@@ -284,10 +284,11 @@ the shipped config is month-first). Beyond ISO, that list is the complete accept
 is no fallback parser, so a value matching nothing in it is unparsable rather than guessed at.
 `input_formats` also rejects locale- and platform-dependent directives (`%b`/`%B`/`%a`/`%A`/`%Z`)
 because `strptime` resolves those against `LC_TIME`, which would make results machine-dependent
-(NFR-6); a date written with month names is therefore unparsable by design. Values that were
-reinterpreted from a non-ISO format are listed in the build log, not the manifest — the rule
-source ships verbatim, so that log is the only record the reinterpretation happened, and a
-format recurring in it is the signal that it belongs in `input_formats`.
+(NFR-6); a date written with month names is therefore unparsable by design. Reinterpretation is
+a read-time concern only and is not reported: the parsed value is the same whichever declared
+format matched, the rule source ships verbatim, and a per-rule record of it would swamp both the
+build log and the manifest. Only unreadable dates are surfaced — by lint, and by the build's
+unparsable-date gate.
 
 **Times and offsets.** A value carrying a time is truncated to its date, and a UTC offset is
 **ignored rather than converted**: `2026-05-03T22:00:00-06:00` compares as `2026-05-03`, the

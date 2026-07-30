@@ -29,7 +29,7 @@ import apply_filters
 from config_schema import ConfigError
 from corpus import (
     PipelineError, RuleRecord, strip_superseded, load_corpus,
-    find_collision, module_offenders, meta_date_findings, drop_unparsable_dates,
+    find_collision, module_offenders, meta_date_offenders, drop_unparsable_dates,
 )
 from logging_setup import setup_logging
 
@@ -129,7 +129,7 @@ def check_dates(
             logger.warning("\n".join(lines))
         return kept, dropped
 
-    _, offenders = meta_date_findings(rules, meta_dates)
+    offenders = meta_date_offenders(rules, meta_dates)
     if offenders:
         details = "; ".join(
             f"{rule.identifier!r} {field_name}={raw!r}"
@@ -418,27 +418,6 @@ def build(root: Path) -> tuple[list[RuleRecord], list[str], list[dict], Path]:
     output_path = dist / "merged_rules.yara"
     dist.mkdir(exist_ok=True)
     output_path.write_text(merged_source)
-
-    # --- Report reinterpreted dates ---
-    # Computed on the final ordered list so the report describes what shipped, not
-    # what was parsed. There are no offenders left to find here: check_dates above
-    # either raised or removed every one of them. Advisory only, and deliberately
-    # not in the manifest — the rule source ships verbatim, so this log is the only
-    # record that a value was reinterpreted, and a format recurring here is the
-    # signal that it belongs in meta_dates.input_formats.
-    normalizations, _ = meta_date_findings(ordered, config.meta_dates)
-    if normalizations:
-        lines = [
-            f"{len(normalizations)} rule date(s) reinterpreted from a non-ISO format "
-            f"(a recurring format belongs in config/build.yaml meta_dates.input_formats):",
-            "",
-        ]
-        lines += [
-            f"  {n['identifier']} {n['field']} {n['raw']!r} → {n['normalized']} "
-            f"via {n['via']}"
-            for n in normalizations
-        ]
-        logger.info("\n".join(lines))
 
     # --- Write manifest ---
     write_manifest(ordered, removed_ids, exclusion_record,

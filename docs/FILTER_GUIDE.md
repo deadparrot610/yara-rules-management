@@ -153,15 +153,11 @@ compared as `2026-04-18` — the time is truncated and the offset ignored, never
 another day. Non-ISO timestamps work too once declared (`"%m/%d/%Y %H:%M"`). Bounds in this
 policy stay strict ISO **date**-only: a bound with a time in it is a `ConfigError` at load.
 
-Every non-ISO value that had to be reinterpreted is reported in the build log, with the
-format that matched. It is kept out of `dist/build_manifest.json` on purpose: it is advisory,
-and one line per rule per date field would bury everything else in the manifest.
-
 A rule that **lacks** the named field is simply not selected. A rule whose field is **present
 but unreadable** never reaches the filter engine: the build's unparsable-date gate runs first
 and, per `meta_dates.on_unparsable`, either fails the build or drops the rule. Drops are listed
-in the manifest under `dropped_unparsable_dates` — together with the reinterpretation log
-above, that is how a recurring vendor format earns a pinned entry in `input_formats`. `scripts/lint.py`
+in the manifest under `dropped_unparsable_dates` — that is how a recurring vendor format earns
+a pinned entry in `input_formats`. `scripts/lint.py`
 reports the same offenders earlier and lists them all at once.
 
 ---

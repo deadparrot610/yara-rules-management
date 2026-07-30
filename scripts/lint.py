@@ -135,7 +135,7 @@ def lint_dates(rules: list, meta_dates, root: Path) -> tuple[list, list]:
     filter in policy an unreadable date would otherwise go entirely unnoticed
     until the day someone writes one.
     """
-    _, offenders = corpus.meta_date_findings(rules, meta_dates)
+    offenders = corpus.meta_date_offenders(rules, meta_dates)
     accepted = config_schema.describe_accepted_dates(meta_dates)
     dropping = meta_dates.on_unparsable == "warn_and_drop"
     consequence = " — the build will drop this rule" if dropping else ""

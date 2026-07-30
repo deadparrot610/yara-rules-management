@@ -199,32 +199,27 @@ def module_offenders(
     return offenders
 
 
-def meta_date_findings(
+def meta_date_offenders(
     rules: list[RuleRecord], meta_dates,
-) -> tuple[list[dict], list[tuple[RuleRecord, str, object]]]:
-    """Return (normalizations, offenders) for the configured date meta fields.
+) -> list[tuple[RuleRecord, str, object]]:
+    """Return (rule, field, raw_value) triples for date meta fields nothing parsed.
 
-    normalizations records values that parsed but were *not* already ISO —
-    {"identifier", "field", "raw", "normalized", "via"} — i.e. the audit trail of
-    every value the pipeline reinterpreted. The build logs these; since the rule
-    source itself is emitted verbatim, that log is the only visible record of the
-    reinterpretation.
-
-    offenders are (rule, field, raw_value) triples nothing could parse.
+    A value that parses is of no further interest here: normalization happens at
+    comparison time in apply_filters and the rule source ships verbatim either
+    way, so a reinterpreted date is not reported anywhere.
 
     A rule not carrying a configured field is skipped: absence is not an error
     here (vendor feeds legitimately omit fields, and required_meta already owns
     the completeness question for custom/override rules).
 
     The single definition of "an unreadable rule date" shared by the lint gate
-    (scripts/lint.py) and the build gate (scripts/build_ruleset.py). Results are
-    sorted by (identifier, field) so both lists read identically across runs on
-    identical input (NFR-6).
+    (scripts/lint.py) and the build gate (scripts/build_ruleset.py). Sorted by
+    (identifier, field) so the reason strings drop_unparsable_dates builds from
+    this order are identical across runs on identical input (NFR-6).
     """
-    normalizations: list[dict] = []
     offenders: list[tuple[RuleRecord, str, object]] = []
     if not meta_dates.fields:
-        return normalizations, offenders
+        return offenders
 
     for rule in rules:
         for field_name in meta_dates.fields:
@@ -232,23 +227,12 @@ def meta_date_findings(
                 continue
             raw = rule.meta[field_name]
             try:
-                normalized, via = config_schema.normalize_meta_date(raw, meta_dates)
+                config_schema.normalize_meta_date(raw, meta_dates)
             except ValueError:
                 offenders.append((rule, field_name, raw))
-                continue
-            if via == config_schema.DATE_FORMAT:
-                continue
-            normalizations.append({
-                "identifier": rule.identifier,
-                "field": field_name,
-                "raw": str(raw),
-                "normalized": normalized.isoformat(),
-                "via": via,
-            })
 
-    normalizations.sort(key=lambda n: (n["identifier"], n["field"]))
     offenders.sort(key=lambda o: (o[0].identifier, o[1]))
-    return normalizations, offenders
+    return offenders
 
 
 def drop_unparsable_dates(
@@ -266,7 +250,7 @@ def drop_unparsable_dates(
     cross-checks over drops for free. A rule with several unreadable date fields
     yields one record naming all of them.
     """
-    _, offenders = meta_date_findings(rules, meta_dates)
+    offenders = meta_date_offenders(rules, meta_dates)
     if not offenders:
         return list(rules), []
 

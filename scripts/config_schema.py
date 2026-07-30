@@ -225,7 +225,8 @@ def normalize_meta_date(value, spec: "MetaDateConfig | None" = None) -> tuple[da
     stop.
 
     The second element of the return is the format string that matched, or
-    ISO_DATETIME, so callers can record how a value was reinterpreted.
+    ISO_DATETIME. No caller acts on it — it exists to make which format won
+    observable, which is how the ordering tie-break above is tested.
 
     Raises ValueError when nothing matches. With no spec this is ISO-only, i.e.
     exactly the behavior that predates the meta_dates config.

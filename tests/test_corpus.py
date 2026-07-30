@@ -1,6 +1,5 @@
 """Tests for the shared corpus primitives."""
 
-import config_schema
 import corpus
 from config_schema import MetaDateConfig, OverrideEntry
 from conftest import make_rule
@@ -88,7 +87,7 @@ def test_strip_superseded_against_real_manifest(root):
     assert "vendor_override" not in {r.identifier for r in remaining}
 
 
-# --- meta date findings ----------------------------------------------------
+# --- meta date offenders ---------------------------------------------------
 
 def _meta_dates(*formats, fields=("date",), on_unparsable="fail"):
     return MetaDateConfig(
@@ -96,64 +95,49 @@ def _meta_dates(*formats, fields=("date",), on_unparsable="fail"):
         on_unparsable=on_unparsable)
 
 
-def test_meta_date_findings_records_only_non_iso():
+def test_meta_date_offenders_ignores_parsable_values():
+    # ISO and declared-format values alike are of no interest — only what nothing
+    # could parse is reported.
     iso = make_rule("Iso", meta={"date": "2026-07-13"})
     other = make_rule("Other", meta={"date": "07/13/2026"})
-    normalizations, offenders = corpus.meta_date_findings(
-        [iso, other], _meta_dates("%m/%d/%Y"))
-    assert offenders == []
-    assert normalizations == [{
-        "identifier": "Other", "field": "date", "raw": "07/13/2026",
-        "normalized": "2026-07-13", "via": "%m/%d/%Y",
-    }]
+    stamped = make_rule("Stamped", meta={"date": "2026-07-13T14:22:01Z"})
+    assert corpus.meta_date_offenders(
+        [iso, other, stamped], _meta_dates("%m/%d/%Y")) == []
 
 
-def test_meta_date_findings_records_a_truncated_timestamp():
-    # The rule source ships verbatim, so this record is the only trace that a
-    # time component was discarded.
-    rule = make_rule("Stamped", meta={"date": "2026-07-13T14:22:01Z"})
-    normalizations, offenders = corpus.meta_date_findings([rule], _meta_dates())
-    assert offenders == []
-    assert normalizations == [{
-        "identifier": "Stamped", "field": "date", "raw": "2026-07-13T14:22:01Z",
-        "normalized": "2026-07-13", "via": config_schema.ISO_DATETIME,
-    }]
-
-
-def test_meta_date_findings_skips_absent_field():
+def test_meta_date_offenders_skips_absent_field():
     rule = make_rule("NoDate", meta={"author": "x"})
-    assert corpus.meta_date_findings([rule], _meta_dates()) == ([], [])
+    assert corpus.meta_date_offenders([rule], _meta_dates()) == []
 
 
-def test_meta_date_findings_reports_offender():
+def test_meta_date_offenders_reports_offender():
     rule = make_rule("Bad", meta={"date": "sometime in July"})
-    normalizations, offenders = corpus.meta_date_findings([rule], _meta_dates())
-    assert normalizations == []
+    offenders = corpus.meta_date_offenders([rule], _meta_dates())
     assert [(r.identifier, f, raw) for r, f, raw in offenders] == [
         ("Bad", "date", "sometime in July")]
 
 
-def test_meta_date_findings_covers_every_configured_field():
-    rule = make_rule("Two", meta={"date": "07/13/2026", "first_seen": "07/01/2026"})
-    normalizations, _ = corpus.meta_date_findings(
+def test_meta_date_offenders_covers_every_configured_field():
+    rule = make_rule("Two", meta={"date": "nope", "first_seen": "also nope"})
+    offenders = corpus.meta_date_offenders(
         [rule], _meta_dates("%m/%d/%Y", fields=("date", "first_seen")))
-    assert [n["field"] for n in normalizations] == ["date", "first_seen"]
+    assert [f for _, f, _ in offenders] == ["date", "first_seen"]
 
 
-def test_meta_date_findings_is_order_independent():
+def test_meta_date_offenders_is_order_independent():
     # Identical input must produce identical output regardless of parse order
-    # (NFR-6) — the manifest embeds this list.
-    rules = [make_rule(i, meta={"date": "07/13/2026"}) for i in ("C", "A", "B")]
+    # (NFR-6) — drop_unparsable_dates builds its reason strings from this order.
+    rules = [make_rule(i, meta={"date": "nope"}) for i in ("C", "A", "B")]
     spec = _meta_dates("%m/%d/%Y")
-    forward, _ = corpus.meta_date_findings(rules, spec)
-    reverse, _ = corpus.meta_date_findings(list(reversed(rules)), spec)
-    assert [n["identifier"] for n in forward] == ["A", "B", "C"]
+    forward = corpus.meta_date_offenders(rules, spec)
+    reverse = corpus.meta_date_offenders(list(reversed(rules)), spec)
+    assert [r.identifier for r, _, _ in forward] == ["A", "B", "C"]
     assert forward == reverse
 
 
-def test_meta_date_findings_empty_fields_is_a_noop():
+def test_meta_date_offenders_empty_fields_is_a_noop():
     rule = make_rule("Bad", meta={"date": "sometime in July"})
-    assert corpus.meta_date_findings([rule], MetaDateConfig()) == ([], [])
+    assert corpus.meta_date_offenders([rule], MetaDateConfig()) == []
 
 
 # --- drop_unparsable_dates -------------------------------------------------
