@@ -49,8 +49,9 @@ meta_dates:
   #   fail          — lint errors and the build blocks. No artifact is written.
   #   warn_and_drop — every offender is logged, and those rules are removed from
   #                   the corpus after the override strip and before the filter
-  #                   phase. Drops are recorded in the build manifest under
-  #                   dropped_unparsable_dates and still run through the
-  #                   coverage-gap, referential-integrity and floor cross-checks,
-  #                   so dropping an override rule can still block the build.
+  #                   phase. Drops are seeded into the filter engine's exclusion
+  #                   record — so the manifest lists them in filtered_rules — and
+  #                   still run through the coverage-gap, referential-integrity
+  #                   and floor cross-checks, so dropping an override rule can
+  #                   still block the build.
   on_unparsable: fail

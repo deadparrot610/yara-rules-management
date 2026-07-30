@@ -299,7 +299,6 @@ def write_manifest(
     exclusion_record: list[dict],
     source_files: list[Path],
     dest: Path,
-    date_drops: list[dict] | None = None,
 ) -> None:
     counts = {origin: sum(1 for r in rules if r.origin == origin)
               for origin in ("vendor", "custom", "overrides")}
@@ -320,10 +319,9 @@ def write_manifest(
             "overrides": counts["overrides"],
         },
         "removed_vendor_rules": removed_ids,
-        # Rules removed by the unparsable-date gate under on_unparsable:
-        # warn_and_drop. Always [] under 'fail', which raises instead. This is
-        # how a recurring vendor format earns a place in meta_dates.input_formats.
-        "dropped_unparsable_dates": date_drops or [],
+        # filtered_rules covers the unparsable-date drops too: they are seeded
+        # into the exclusion record via apply_filters.run(pre_excluded=...), and
+        # carry a null filter_id with an "unparsable date:" reason.
         "filtered_rules": exclusion_record,
         "source_hashes": {
             str(p.relative_to(dest.parent.parent)): _sha256(p)
@@ -421,8 +419,7 @@ def build(root: Path) -> tuple[list[RuleRecord], list[str], list[dict], Path]:
 
     # --- Write manifest ---
     write_manifest(ordered, removed_ids, exclusion_record,
-                   corpus_data.source_files, dist / "build_manifest.json",
-                   date_drops)
+                   corpus_data.source_files, dist / "build_manifest.json")
 
     return ordered, removed_ids, exclusion_record, output_path
 

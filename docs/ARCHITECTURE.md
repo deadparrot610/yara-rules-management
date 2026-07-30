@@ -247,7 +247,7 @@ Sequence:
 10. **Order** the emitted rules so dependencies resolve (see §6): vendor-remainder → overrides → custom, with topological adjustment if intra-set references exist.
 11. **Compile** the merged-and-filtered corpus (as an in-memory string) with `yara-python` as the authoritative validation gate (FR-7). Compilation is non-negotiable even when only source output is requested — it is how "the ruleset is valid" is proven, and it runs before anything is written to `dist/` so no unvalidated artifact ever exists on disk.
 12. **Emit** `dist/merged_rules.yara` (source only; D-2 — `output_formats` values other than `source` are rejected at the start of the build).
-13. **Write** `dist/build_manifest.json`: rule counts by source, overridden/removed vendor identifiers, **filtered-out rules with responsible filter id and reason**, dropped rule dates (`dropped_unparsable_dates`), per-source-file SHA-256, tool/engine versions, and build version. Reinterpreted dates are *not* recorded — see §6.
+13. **Write** `dist/build_manifest.json`: rule counts by source, overridden/removed vendor identifiers, **filtered-out rules with responsible filter id and reason** (unparsable-date drops included — see §6), per-source-file SHA-256, tool/engine versions, and build version. Reinterpreted dates are *not* recorded — see §6.
 
 ## 6. Rule ordering, modules, and external variables
 
@@ -310,8 +310,9 @@ stale (an unconditional hard block) in what is meant to be a tolerant mode, and 
 collision and module gates so a drop cannot mask a source defect. The drops are fed into the
 filter engine's exclusion record, so they still face the coverage-gap, referential-integrity and
 floor cross-checks: dropping an override rule whose superseded vendor rules are gone still
-blocks on the coverage-gap checkpoint. Dropped rules are listed in the build manifest under
-`dropped_unparsable_dates`.
+blocks on the coverage-gap checkpoint. That seeding is also how they reach the build manifest:
+they appear in `filtered_rules` with a null `filter_id` and an `unparsable date:` reason, with
+no separate manifest key.
 
 ## 7. Components
 

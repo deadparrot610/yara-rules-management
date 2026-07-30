@@ -155,8 +155,9 @@ policy stay strict ISO **date**-only: a bound with a time in it is a `ConfigErro
 
 A rule that **lacks** the named field is simply not selected. A rule whose field is **present
 but unreadable** never reaches the filter engine: the build's unparsable-date gate runs first
-and, per `meta_dates.on_unparsable`, either fails the build or drops the rule. Drops are listed
-in the manifest under `dropped_unparsable_dates` — that is how a recurring vendor format earns
+and, per `meta_dates.on_unparsable`, either fails the build or drops the rule. Drops are seeded
+into the exclusion record, so the manifest lists them in `filtered_rules` with a null
+`filter_id` and an `unparsable date:` reason — that is how a recurring vendor format earns
 a pinned entry in `input_formats`. `scripts/lint.py`
 reports the same offenders earlier and lists them all at once.
 

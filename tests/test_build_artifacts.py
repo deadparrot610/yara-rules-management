@@ -60,12 +60,13 @@ def test_manifest_omits_meta_date_normalizations(built):
     assert "meta_date_normalizations" not in manifest
 
 
-def test_manifest_records_dropped_unparsable_dates(built):
+def test_manifest_omits_dropped_unparsable_dates(built):
     _, manifest_path = built
     manifest = json.loads(manifest_path.read_text())
-    # Also unconditional, and always empty under on_unparsable: fail — that mode
-    # raises rather than dropping. The shipped config is 'fail'.
-    assert manifest["dropped_unparsable_dates"] == []
+    # Drops under on_unparsable: warn_and_drop are seeded into the exclusion
+    # record, so filtered_rules already names them (null filter_id, "unparsable
+    # date:" reason). A second dedicated key would report each drop twice.
+    assert "dropped_unparsable_dates" not in manifest
 
 
 def test_manifest_has_provenance(built):
