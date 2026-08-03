@@ -29,6 +29,13 @@ The system is a Git repository plus a CI/CD pipeline. Authors commit rules into 
                      build_manifest.json                      false-positive gate              + build manifest
 ```
 
+The full flow, with every gate and its outcome, is drawn in
+[build_pipeline.svg](build_pipeline.svg) — see [BUILD_PIPELINE.md](BUILD_PIPELINE.md) for the
+legend. It expands the sketch above: §4.2 is the resolution ladder, §4.3 and §4.5 are the
+three cross-checks, §5 is the build spine, and §10 is the CI band along the bottom.
+
+[![Build pipeline](build_pipeline.svg)](BUILD_PIPELINE.md)
+
 ## 2. Repository structure
 
 ```

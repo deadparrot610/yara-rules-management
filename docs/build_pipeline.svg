@@ -1,0 +1,490 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1620 2500" width="1620" height="2500" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" role="img" aria-label="YARA ruleset build pipeline: rule sources and config feed a fourteen-stage build with six hard gates, a filter engine with three cross-checks, and CI stages producing dist artifacts and a tagged release.">
+  <title>YARA ruleset build pipeline</title>
+  <desc>Full data flow for scripts/build_ruleset.py, including lint, the filter engine, and the GitLab CI stages.</desc>
+
+  <style>
+    .h1   { font-size: 27px; font-weight: 700; fill: #0f1720; }
+    .h2   { font-size: 13px; fill: #55606c; }
+    .grp  { font-size: 13.5px; font-weight: 700; fill: #3d4752; letter-spacing: .04em; }
+    .t    { font-size: 14px; font-weight: 650; }
+    .s    { font-size: 11.5px; }
+    .m    { font-size: 11.5px; font-family: ui-monospace, 'Cascadia Mono', Consolas, 'Liberation Mono', monospace; }
+    .lg   { font-size: 11.5px; fill: #47515c; }
+    .note { font-size: 11px; fill: #6b7681; font-style: italic; }
+
+    .grpbox   { fill: none; stroke: #c3cbd4; stroke-width: 1.2; stroke-dasharray: 6 4; }
+    .buildbox { fill: #fdfdfe; stroke: #9aa5b1; stroke-width: 1.4; }
+    .panel    { fill: #f7f4ff; stroke: #7048e8; stroke-width: 1.4; }
+    .cibox    { fill: #f2fbf6; stroke: #2f9e44; stroke-width: 1.4; }
+
+    .io   rect { fill: #e7efff; stroke: #3b5bdb; stroke-width: 1.2; }
+    .io   text { fill: #101c3a; }
+    .st   rect { fill: #f0f2f5; stroke: #5c6670; stroke-width: 1.2; }
+    .st   text { fill: #14181c; }
+    .gt   rect { fill: #fff2e3; stroke: #e8590c; stroke-width: 2; }
+    .gt   text { fill: #3d1c02; }
+    .bk   rect { fill: #ffe3e3; stroke: #c92a2a; stroke-width: 2; }
+    .bk   text { fill: #3b0708; }
+    .wn   rect { fill: #fff8db; stroke: #d9880a; stroke-width: 1.4; }
+    .wn   text { fill: #3d2b02; }
+    .df   rect { fill: #f3f4f6; stroke: #adb5bd; stroke-width: 1.2; stroke-dasharray: 5 3; }
+    .df   text { fill: #6b7178; }
+
+    .flow { fill: none; stroke: #5c6670; stroke-width: 1.8; marker-end: url(#ah); }
+    .cfg  { fill: none; stroke: #8b97a3; stroke-width: 1.5; stroke-dasharray: 4 4; marker-end: url(#ahd); }
+  </style>
+
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5c6670"/>
+    </marker>
+    <marker id="ahd" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#8b97a3"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1620" height="2500" fill="#fbfcfe"/>
+
+  <!-- ===================================================== header + legend -->
+  <text class="h1" x="40" y="52">YARA ruleset build pipeline</text>
+  <text class="h2" x="40" y="76">Full data flow — sources and config in, fourteen build stages and their gates in the middle, dist/ artifacts and a tagged release out. Source: docs/build_pipeline.mmd</text>
+
+  <g class="io"><rect x="40" y="112" width="16" height="16" rx="3"/></g>
+  <text class="lg" x="62" y="125">file</text>
+  <g class="st"><rect x="130" y="112" width="16" height="16" rx="3"/></g>
+  <text class="lg" x="152" y="125">stage</text>
+  <g class="gt"><rect x="225" y="112" width="16" height="16" rx="3"/></g>
+  <text class="lg" x="247" y="125">gate</text>
+  <g class="bk"><rect x="310" y="112" width="16" height="16" rx="3"/></g>
+  <text class="lg" x="332" y="125">BLOCK — non-zero exit</text>
+  <g class="wn"><rect x="480" y="112" width="16" height="16" rx="3"/></g>
+  <text class="lg" x="502" y="125">warning — run continues</text>
+  <g class="df"><rect x="660" y="112" width="16" height="16" rx="3"/></g>
+  <text class="lg" x="682" y="125">deferred</text>
+  <path class="flow" d="M760,120 H794"/>
+  <text class="lg" x="802" y="125">corpus flow / pass path</text>
+  <path class="cfg" d="M960,120 H994"/>
+  <text class="lg" x="1002" y="125">config or artifact input</text>
+  <text class="note" x="1180" y="125">A gate's pass path is the vertical spine; its failure paths branch to the right.</text>
+
+  <!-- ========================================================= inputs lane -->
+  <text class="grp" x="40" y="188">RULE SOURCES — corpus.discover_sources</text>
+  <rect class="grpbox" x="40" y="200" width="390" height="200" rx="8"/>
+
+  <g class="io">
+    <rect x="58" y="222" width="354" height="48" rx="5"/>
+    <text class="m" x="74" y="243">rules/vendor/*.yara</text>
+    <text class="s" x="74" y="260">sorted glob · committed as received (exempt from required_meta)</text>
+  </g>
+  <g class="io">
+    <rect x="58" y="282" width="354" height="48" rx="5"/>
+    <text class="m" x="74" y="303">rules/overrides/overrides.yara</text>
+    <text class="s" x="74" y="320">single fixed path · replaces named vendor rules</text>
+  </g>
+  <g class="io">
+    <rect x="58" y="342" width="354" height="48" rx="5"/>
+    <text class="m" x="74" y="363">rules/custom/**/*.yara</text>
+    <text class="s" x="74" y="380">sorted rglob · malware/, apt/, tooling/</text>
+  </g>
+
+  <text class="grp" x="40" y="440">CONFIG &amp; DECISION FILES — config_schema.load_*</text>
+  <rect class="grpbox" x="40" y="452" width="390" height="330" rx="8"/>
+
+  <g class="io">
+    <rect x="58" y="474" width="354" height="66" rx="5"/>
+    <text class="m" x="74" y="495">config/build.yaml</text>
+    <text class="s" x="74" y="512">output_formats · yara_modules · external_variables</text>
+    <text class="s" x="74" y="529">required_meta · meta_dates · the two decision-file paths</text>
+  </g>
+  <g class="io">
+    <rect x="58" y="552" width="354" height="48" rx="5"/>
+    <text class="m" x="74" y="573">overrides/override_manifest.yaml</text>
+    <text class="s" x="74" y="590">override_rule → supersedes[] · reason · author · ticket</text>
+  </g>
+  <g class="io">
+    <rect x="58" y="612" width="354" height="66" rx="5"/>
+    <text class="m" x="74" y="633">filters/filter_policy.yaml</text>
+    <text class="s" x="74" y="650">default_mode (include_all, D-9) · on_empty_output</text>
+    <text class="s" x="74" y="667">min_output_rules · filters[]</text>
+  </g>
+  <g class="io">
+    <rect x="58" y="690" width="354" height="40" rx="5"/>
+    <text class="m" x="74" y="707">overrides/stale_override_decisions.yaml</text>
+    <text class="s" x="74" y="723">reviewer keep / discard (D-4)</text>
+  </g>
+  <g class="io">
+    <rect x="58" y="738" width="354" height="40" rx="5"/>
+    <text class="m" x="74" y="755">filters/coverage_gap_decisions.yaml</text>
+    <text class="s" x="74" y="771">reviewer keep / discard (D-10)</text>
+  </g>
+
+  <text class="grp" x="40" y="822">CI STAGE: lint</text>
+  <rect class="grpbox" x="40" y="834" width="390" height="240" rx="8"/>
+
+  <g class="st">
+    <rect x="58" y="856" width="354" height="94" rx="5"/>
+    <text class="t" x="74" y="877">ruff check scripts/ tests/</text>
+    <text class="m" x="74" y="896">python scripts/lint.py</text>
+    <text class="s" x="74" y="913">lint_syntax · lint_metadata (custom + overrides only)</text>
+    <text class="s" x="74" y="930">lint_dates (every origin) · lint_modules</text>
+    <text class="s" x="74" y="947">lint_collisions (post-strip) · lint_naming</text>
+  </g>
+  <g class="wn">
+    <rect x="58" y="962" width="354" height="40" rx="5"/>
+    <text class="t" x="74" y="979">lint_filter_policy — warning only</text>
+    <text class="s" x="74" y="995">a rule: scope or match.name not in the corpus</text>
+  </g>
+  <g class="gt">
+    <rect x="58" y="1014" width="354" height="44" rx="5"/>
+    <text class="t" x="74" y="1033">◆ any error?  →  BLOCK</text>
+    <text class="m" x="74" y="1050">lint failed (n error(s))</text>
+  </g>
+
+  <!-- ============================================================== build -->
+  <rect class="buildbox" x="486" y="196" width="1106" height="1770" rx="10"/>
+  <text class="grp" x="504" y="222">CI STAGE: build — scripts/build_ruleset.py : build(root)</text>
+
+  <path class="flow" d="M430,1036 H482"/>
+  <text class="note" x="436" y="1028">lint passes</text>
+
+  <!-- stage 0 -->
+  <g class="st">
+    <rect x="500" y="240" width="580" height="52" rx="5"/>
+    <text class="t" x="520" y="263">0 · Load config, override manifest, filter policy</text>
+    <text class="s" x="520" y="281">config_schema.load_* — any ConfigError (missing file, unknown key, bad enum) blocks</text>
+  </g>
+  <!-- gate 1 -->
+  <g class="gt">
+    <rect x="500" y="312" width="580" height="52" rx="5"/>
+    <text class="t" x="520" y="335">◆ 1 · check_output_formats</text>
+    <text class="s" x="520" y="353">config/build.yaml: output_formats — every entry must be "source"</text>
+  </g>
+  <!-- stage 2 -->
+  <g class="st">
+    <rect x="500" y="384" width="580" height="70" rx="5"/>
+    <text class="t" x="520" y="407">2 · corpus.load_corpus  →  Corpus of RuleRecord</text>
+    <text class="s" x="520" y="425">identifier · meta · tags · condition_terms · imports · origin · filepath</text>
+    <text class="s" x="520" y="443">a plyara parse failure blocks: "failed to parse &lt;path&gt;"</text>
+  </g>
+  <!-- gate 3 -->
+  <g class="gt">
+    <rect x="500" y="474" width="580" height="62" rx="5"/>
+    <text class="t" x="520" y="497">◆ 3 · check_overrides.validate — stale-override checkpoint</text>
+    <text class="s" x="520" y="515">manifest semantics + every supersedes target must still exist in vendor</text>
+    <text class="s" x="520" y="533">reads overrides/stale_override_decisions.yaml</text>
+  </g>
+  <!-- stage 4 -->
+  <g class="st">
+    <rect x="500" y="556" width="580" height="70" rx="5"/>
+    <text class="t" x="520" y="579">4 · corpus.strip_superseded  —  override means removal</text>
+    <text class="s" x="520" y="597">→ vendor_remainder + removed_ids</text>
+    <text class="m" x="520" y="615">post_strip = vendor_remainder + override_rules + custom_rules</text>
+  </g>
+  <!-- gate 5 -->
+  <g class="gt">
+    <rect x="500" y="646" width="580" height="52" rx="5"/>
+    <text class="t" x="520" y="669">◆ 5 · check_collisions — duplicate identifier?</text>
+    <text class="s" x="520" y="687">run pre-filter on purpose — a duplicate id is a source defect</text>
+  </g>
+  <!-- gate 6 -->
+  <g class="gt">
+    <rect x="500" y="718" width="580" height="52" rx="5"/>
+    <text class="t" x="520" y="741">◆ 6 · check_modules — import outside the allowlist?</text>
+    <text class="s" x="520" y="759">config/build.yaml: yara_modules — pe, elf, math (D-1, Corelight Fleet Manager)</text>
+  </g>
+  <!-- gate 7 -->
+  <g class="gt">
+    <rect x="500" y="790" width="580" height="52" rx="5"/>
+    <text class="t" x="520" y="813">◆ 7 · check_dates — unparsable meta date?</text>
+    <text class="s" x="520" y="831">config/build.yaml: meta_dates — fields, input_formats, on_unparsable · every origin</text>
+  </g>
+  <!-- stage 8 -->
+  <g class="st">
+    <rect x="500" y="862" width="580" height="52" rx="5"/>
+    <text class="t" x="520" y="885">8 · Apply the filter policy</text>
+    <text class="m" x="520" y="903">apply_filters.run(post_strip, policy, …, pre_excluded=date_drops)</text>
+  </g>
+
+  <!-- gate outcomes lane -->
+  <g class="bk">
+    <rect x="1120" y="316" width="472" height="44" rx="5"/>
+    <text class="t" x="1140" y="337">BLOCK — a non-source format is configured</text>
+    <text class="s" x="1140" y="353">D-2: Corelight compiles internally; .yarc is never emitted</text>
+  </g>
+
+  <g class="bk">
+    <rect x="1120" y="456" width="472" height="60" rx="5"/>
+    <text class="t" x="1140" y="477">BLOCK — stale override, no recorded decision</text>
+    <text class="s" x="1140" y="493">"STALE OVERRIDE CHECKPOINT — build blocked."</text>
+    <text class="s" x="1140" y="510">the error prints a paste-ready YAML entry</text>
+  </g>
+  <g class="wn">
+    <rect x="1120" y="528" width="472" height="40" rx="5"/>
+    <text class="t" x="1140" y="545">warn — decision: discard  ·  keep passes silently</text>
+    <text class="s" x="1140" y="561">logs "REQUIRED CLEANUP"; a returned vendor rule also warns</text>
+  </g>
+
+  <g class="bk">
+    <rect x="1120" y="648" width="472" height="48" rx="5"/>
+    <text class="t" x="1140" y="669">BLOCK — duplicate identifier</text>
+    <text class="s" x="1140" y="686">"duplicate identifier &lt;id&gt; in &lt;file&gt; and &lt;file&gt;"</text>
+  </g>
+
+  <g class="bk">
+    <rect x="1120" y="720" width="472" height="48" rx="5"/>
+    <text class="t" x="1140" y="741">BLOCK — disallowed module import</text>
+    <text class="s" x="1140" y="758">the compile gate cannot catch it — yara-python supports more modules</text>
+  </g>
+
+  <g class="bk">
+    <rect x="1120" y="782" width="472" height="36" rx="5"/>
+    <text class="t" x="1140" y="805">BLOCK — on_unparsable: fail (the default)</text>
+  </g>
+  <g class="wn">
+    <rect x="1120" y="828" width="472" height="62" rx="5"/>
+    <text class="t" x="1140" y="849">warn + drop — on_unparsable: warn_and_drop</text>
+    <text class="s" x="1140" y="866">every offender is logged and removed from the corpus; the drops become</text>
+    <text class="m" x="1140" y="883">date_drops: filter_id = null, "unparsable date: field='raw'"</text>
+  </g>
+
+  <!-- ======================================================= filter panel -->
+  <rect class="panel" x="500" y="936" width="1080" height="548" rx="8"/>
+  <text class="grp" x="518" y="962">8 · FILTER POLICY — scripts/apply_filters.py  ·  a selection layer, it never edits or deletes source rules</text>
+
+  <g class="st">
+    <rect x="520" y="976" width="1040" height="44" rx="5"/>
+    <text class="t" x="540" y="997">Seed exclusion_record with pre_excluded</text>
+    <text class="s" x="540" y="1013">the stage-7 date drops enter here, so they face all three cross-checks and reach the manifest</text>
+  </g>
+  <g class="st">
+    <rect x="520" y="1038" width="1040" height="88" rx="5"/>
+    <text class="t" x="540" y="1059">_resolve_rule — specificity ladder, most specific wins</text>
+    <text class="m" x="540" y="1078">rule:&lt;Identifier&gt;  0    &gt;    vendor | custom | overrides  1    &gt;    global  2</text>
+    <text class="s" x="540" y="1096">selector keys AND together: name · name_glob · name_regex · tags · meta · meta_in · meta_date</text>
+    <text class="s" x="540" y="1114">no filter applies → default_mode from filter_policy.yaml (include_all — a denylist, D-9)</text>
+  </g>
+  <g class="gt">
+    <rect x="520" y="1144" width="1040" height="48" rx="5"/>
+    <text class="t" x="540" y="1165">Conflict at the same specificity  →  EXCLUDE WINS</text>
+    <text class="s" x="540" y="1182">D-8, hardcoded — any other tie-break makes output depend on filter order, or blocks on a resolvable conflict</text>
+  </g>
+
+  <g class="gt">
+    <rect x="520" y="1212" width="336" height="92" rx="5"/>
+    <text class="t" x="536" y="1233">◆ cross-check 1</text>
+    <text class="t" x="536" y="1251">_coverage_gap_check</text>
+    <text class="s" x="536" y="1269">an excluded override whose superseded</text>
+    <text class="s" x="536" y="1285">vendor rules were already stripped —</text>
+    <text class="s" x="536" y="1299">neither detection would ship</text>
+  </g>
+  <g class="gt">
+    <rect x="872" y="1212" width="336" height="92" rx="5"/>
+    <text class="t" x="888" y="1233">◆ cross-check 2</text>
+    <text class="t" x="888" y="1251">_referential_integrity_check</text>
+    <text class="s" x="888" y="1269">an included rule's condition still</text>
+    <text class="s" x="888" y="1285">references an excluded identifier</text>
+  </g>
+  <g class="gt">
+    <rect x="1224" y="1212" width="336" height="92" rx="5"/>
+    <text class="t" x="1240" y="1233">◆ cross-check 3</text>
+    <text class="t" x="1240" y="1251">_floor_guard</text>
+    <text class="s" x="1240" y="1269">included &lt; min_output_rules —</text>
+    <text class="s" x="1240" y="1285">an over-narrow policy shipping</text>
+    <text class="s" x="1240" y="1299">almost nothing</text>
+  </g>
+
+  <g class="bk">
+    <rect x="520" y="1320" width="336" height="52" rx="5"/>
+    <text class="t" x="536" y="1341">BLOCK — no recorded decision</text>
+    <text class="s" x="536" y="1358">"coverage gap checkpoint: n unresolved"</text>
+  </g>
+  <g class="wn">
+    <rect x="520" y="1382" width="336" height="40" rx="5"/>
+    <text class="t" x="536" y="1399">warn — decision: discard</text>
+    <text class="s" x="536" y="1415">logs "REQUIRED ACTION" · keep is silent</text>
+  </g>
+  <g class="bk">
+    <rect x="872" y="1320" width="336" height="52" rx="5"/>
+    <text class="t" x="888" y="1341">BLOCK — always</text>
+    <text class="s" x="888" y="1358">the merged source would not compile</text>
+  </g>
+  <g class="bk">
+    <rect x="1224" y="1320" width="240" height="52" rx="5"/>
+    <text class="t" x="1240" y="1341">BLOCK or warn</text>
+    <text class="s" x="1240" y="1358">per on_empty_output</text>
+  </g>
+
+  <g class="st">
+    <rect x="520" y="1428" width="1040" height="44" rx="5"/>
+    <text class="t" x="540" y="1449">All three pass  →  included_rules + exclusion_record</text>
+    <text class="s" x="540" y="1465">the exclusion record becomes filtered_rules in the build manifest — one entry per rule, with the filter id that excluded it</text>
+  </g>
+
+  <!-- ========================================================= stages 9-14 -->
+  <g class="gt">
+    <rect x="500" y="1512" width="580" height="76" rx="5"/>
+    <text class="t" x="520" y="1535">◆ 9 · topological_order — a referenced rule must precede its referrer</text>
+    <text class="s" x="520" y="1553">Kahn's algorithm on a min-heap keyed (GROUP_ORDER, input_position, identifier)</text>
+    <text class="s" x="520" y="1571">default emission order vendor 0 → overrides 1 → custom 2 · deterministic (NFR-6)</text>
+  </g>
+  <g class="st">
+    <rect x="500" y="1618" width="580" height="70" rx="5"/>
+    <text class="t" x="520" y="1641">10–11 · union the imports · build_source</text>
+    <text class="s" x="520" y="1659">→ merged_source + rule_index, held in memory</text>
+    <text class="s" x="520" y="1677">nothing has been written to disk yet</text>
+  </g>
+  <g class="gt">
+    <rect x="500" y="1718" width="580" height="82" rx="5"/>
+    <text class="t" x="520" y="1741">◆ 12 · compile_rules — THE VALIDATION AUTHORITY</text>
+    <text class="m" x="520" y="1760">yara.compile(source=merged_source, externals=…)</text>
+    <text class="s" x="520" y="1778">config/build.yaml: external_variables (filename, filepath, filetype)</text>
+    <text class="s" x="520" y="1794">runs against the in-memory source, before anything reaches dist/</text>
+  </g>
+  <g class="st">
+    <rect x="500" y="1830" width="580" height="46" rx="5"/>
+    <text class="t" x="520" y="1852">13 · write dist/merged_rules.yara</text>
+    <text class="s" x="520" y="1868">reached only once the compile has passed</text>
+  </g>
+  <g class="st">
+    <rect x="500" y="1906" width="580" height="46" rx="5"/>
+    <text class="t" x="520" y="1928">14 · write_manifest → dist/build_manifest.json</text>
+    <text class="s" x="520" y="1944">records what was removed, what was filtered, and the hash of every input</text>
+  </g>
+
+  <g class="bk">
+    <rect x="1120" y="1524" width="472" height="52" rx="5"/>
+    <text class="t" x="1140" y="1545">BLOCK — reference cycle</text>
+    <text class="s" x="1140" y="1562">"cycle detected among rules: [...]"</text>
+  </g>
+  <g class="bk">
+    <rect x="1120" y="1718" width="472" height="82" rx="5"/>
+    <text class="t" x="1140" y="1741">BLOCK — yara.SyntaxError</text>
+    <text class="s" x="1140" y="1759">"YARA compilation failed (rule 'X' in &lt;path&gt;): msg"</text>
+    <text class="s" x="1140" y="1777">attributed to a specific rule by a bisect over rule_index (_locate_rule)</text>
+    <text class="s" x="1140" y="1793">no artifact is emitted — dist/ is never touched</text>
+  </g>
+
+  <!-- ============================================================ outputs -->
+  <text class="grp" x="504" y="2004">BUILD ARTIFACTS — dist/ (gitignored locally, passed to the test stage as a CI artifact)</text>
+  <rect class="grpbox" x="486" y="2016" width="1106" height="152" rx="8"/>
+
+  <g class="io">
+    <rect x="504" y="2036" width="520" height="116" rx="5"/>
+    <text class="m" x="522" y="2057">dist/merged_rules.yara</text>
+    <text class="s" x="522" y="2075">written at stage 13</text>
+    <text class="s" x="522" y="2093">a single compilation unit, deterministic order (NFR-6)</text>
+    <text class="s" x="522" y="2111">sorted import lines, then vendor → overrides → custom</text>
+    <text class="s" x="522" y="2129">source only — no .yarc is produced (D-2)</text>
+  </g>
+  <g class="io">
+    <rect x="1054" y="2036" width="520" height="116" rx="5"/>
+    <text class="m" x="1072" y="2057">dist/build_manifest.json</text>
+    <text class="s" x="1072" y="2075">written at stage 14 — seven keys</text>
+    <text class="m" x="1072" y="2093">build_version · timestamp · tool_versions</text>
+    <text class="m" x="1072" y="2111">rule_counts · removed_vendor_rules</text>
+    <text class="m" x="1072" y="2129">filtered_rules · source_hashes</text>
+  </g>
+
+  <!-- ================================================================= CI -->
+  <text class="grp" x="58" y="2204">CI STAGE: image — only when its inputs change</text>
+  <rect class="grpbox" x="40" y="2216" width="430" height="130" rx="8"/>
+  <g class="st">
+    <rect x="58" y="2238" width="394" height="88" rx="5"/>
+    <text class="t" x="74" y="2259">build-ci-image · kaniko</text>
+    <text class="s" x="74" y="2277">rules: changes to ci/Dockerfile or requirements.txt</text>
+    <text class="m" x="74" y="2295">→ ci:latest (floating alias)</text>
+    <text class="m" x="74" y="2313">→ ci:$CI_COMMIT_SHA (immutable, auditable)</text>
+  </g>
+
+  <rect class="cibox" x="486" y="2216" width="1106" height="250" rx="8"/>
+  <text class="grp" x="504" y="2242">CI STAGES AFTER build — .gitlab-ci.yml</text>
+
+  <g class="st">
+    <rect x="504" y="2256" width="520" height="80" rx="5"/>
+    <text class="t" x="522" y="2277">test · pytest tests/  —  needs: build</text>
+    <text class="s" x="522" y="2295">validates the built dist/ artifacts; it never rebuilds inline</text>
+    <text class="m" x="522" y="2313">→ test-results/ + junit.xml (when: always, surfaced in the MR)</text>
+    <text class="s" x="522" y="2329">expire_in: 1 week</text>
+  </g>
+  <g class="df">
+    <rect x="504" y="2350" width="520" height="46" rx="5"/>
+    <text class="t" x="522" y="2371">pcap-test — Phase 8, not defined yet</text>
+    <text class="s" x="522" y="2388">deferred pending D-3; a manual job over an uploaded PCAP</text>
+  </g>
+  <g class="st">
+    <rect x="1054" y="2256" width="520" height="80" rx="5"/>
+    <text class="t" x="1072" y="2277">package · tag only  —  needs: build, test</text>
+    <text class="s" x="1072" y="2295">curl image (the CI image is -slim and ships no curl)</text>
+    <text class="m" x="1072" y="2313">→ Package Registry: yara-ruleset/$CI_COMMIT_TAG/</text>
+    <text class="s" x="1072" y="2329">a red test suite therefore blocks the release</text>
+  </g>
+  <g class="st">
+    <rect x="1054" y="2350" width="520" height="98" rx="5"/>
+    <text class="t" x="1072" y="2371">release · tag only  —  needs: package</text>
+    <text class="s" x="1072" y="2389">release-cli get probe first, then create — idempotent when</text>
+    <text class="s" x="1072" y="2405">the Release already exists (UI-created tag, or a retried pipeline)</text>
+    <text class="s" x="1072" y="2423">→ GitLab Release with two --assets-link</text>
+    <text class="s" x="1072" y="2441">tied to its exact inputs by source_hashes + build_version</text>
+  </g>
+
+  <!-- ============================================================== edges -->
+  <!-- spine -->
+  <path class="flow" d="M790,292 V312"/>
+  <path class="flow" d="M790,364 V384"/>
+  <path class="flow" d="M790,454 V474"/>
+  <path class="flow" d="M790,536 V556"/>
+  <path class="flow" d="M790,626 V646"/>
+  <path class="flow" d="M790,698 V718"/>
+  <path class="flow" d="M790,770 V790"/>
+  <path class="flow" d="M790,842 V862"/>
+  <path class="flow" d="M790,914 V976"/>
+  <path class="flow" d="M1040,1472 V1494 H790 V1512"/>
+  <path class="flow" d="M790,1588 V1618"/>
+  <path class="flow" d="M790,1688 V1718"/>
+  <path class="flow" d="M790,1800 V1830"/>
+  <path class="flow" d="M790,1876 V1906"/>
+  <path class="flow" d="M790,1952 V2036"/>
+  <path class="flow" d="M764,2168 V2256"/>
+
+  <!-- gate failure branches -->
+  <path class="flow" d="M1080,338 H1120"/>
+  <path class="flow" d="M1080,496 H1100 V482 H1120"/>
+  <path class="flow" d="M1080,516 H1100 V548 H1120"/>
+  <path class="flow" d="M1120,574 H1100 V600 H1082"/>
+  <path class="flow" d="M1080,672 H1120"/>
+  <path class="flow" d="M1080,744 H1120"/>
+  <path class="flow" d="M1080,808 H1100 V800 H1120"/>
+  <path class="flow" d="M1080,822 H1100 V859 H1120"/>
+  <path class="flow" d="M1120,896 H1100 V888 H1082"/>
+  <path class="flow" d="M1080,1550 H1120"/>
+  <path class="flow" d="M1080,1759 H1120"/>
+
+  <!-- filter panel internals -->
+  <path class="flow" d="M1040,1020 V1038"/>
+  <path class="flow" d="M1040,1126 V1144"/>
+  <path class="flow" d="M1040,1192 V1202 H688 V1212"/>
+  <path class="flow" d="M856,1258 H872"/>
+  <path class="flow" d="M1208,1258 H1224"/>
+  <path class="flow" d="M688,1304 V1320"/>
+  <path class="flow" d="M1040,1304 V1320"/>
+  <path class="flow" d="M1344,1304 V1320"/>
+  <path class="flow" d="M1520,1304 V1428"/>
+
+  <!-- inputs into the build -->
+  <path class="cfg" d="M430,300 C462,300 466,400 496,410"/>
+  <path class="cfg" d="M430,500 C462,500 466,280 496,266"/>
+  <path class="cfg" d="M430,660 C462,660 466,980 496,1000"/>
+  <text class="note" x="436" y="1004">policy + decision files</text>
+
+  <!-- CI image into the python stages -->
+  <path class="cfg" d="M250,2238 V1090"/>
+  <text class="note" x="258" y="1700">$CI_IMAGE — the pinned image the jobs run in</text>
+
+  <!-- artifacts into the test stage -->
+  <path class="flow" d="M1314,2152 V2256" stroke-dasharray="4 4"/>
+
+  <!-- test -> package -> release -->
+  <path class="flow" d="M1024,2296 H1054"/>
+  <path class="flow" d="M1314,2336 V2350"/>
+  <path class="cfg" d="M764,2336 V2350"/>
+</svg>

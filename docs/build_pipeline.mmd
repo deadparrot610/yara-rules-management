@@ -1,0 +1,177 @@
+%% YARA ruleset build pipeline — full repo data flow.
+%% Source of truth for docs/build_pipeline.svg. After editing, re-render:
+%%   docker run --rm -u $(id -u):$(id -g) -v "$PWD":/data minlag/mermaid-cli:11.4.2 \
+%%     -i docs/build_pipeline.mmd -o docs/build_pipeline.svg -b white
+%% See docs/BUILD_PIPELINE.md for the legend and the fish-shell form of the command.
+
+flowchart TD
+
+  %% ---------------------------------------------------------------- inputs
+  subgraph SRC["Rule sources — corpus.discover_sources"]
+    direction LR
+    V["rules/vendor/*.yara<br/>sorted glob · committed as received"]
+    O["rules/overrides/overrides.yara<br/>single fixed path"]
+    C["rules/custom/**/*.yara<br/>sorted rglob"]
+  end
+
+  subgraph CFG["Config &amp; decision files — config_schema.load_*"]
+    direction LR
+    CB["config/build.yaml<br/>output_formats · yara_modules<br/>external_variables · required_meta · meta_dates"]
+    OM["overrides/override_manifest.yaml<br/>override_rule → supersedes"]
+    FP["filters/filter_policy.yaml<br/>default_mode · on_empty_output<br/>min_output_rules · filters"]
+    SD["overrides/stale_override_decisions.yaml<br/>reviewer keep/discard"]
+    CD["filters/coverage_gap_decisions.yaml<br/>reviewer keep/discard"]
+  end
+
+  %% ------------------------------------------------------------- lint job
+  subgraph LINT["CI stage: lint — scripts/lint.py + ruff"]
+    L1["lint_syntax · lint_metadata (custom+overrides only)<br/>lint_dates (all origins) · lint_modules<br/>lint_collisions (post-strip) · lint_naming"]
+    L2["lint_filter_policy<br/>unknown rule: scope / match.name"]
+    LB{{"any error?"}}
+    LW["WARNING only — never blocks"]
+  end
+
+  L1 --> LB
+  L2 --> LW
+  LB -->|yes| XL["BLOCK<br/>lint failed (n error(s))"]
+  LB -->|no| S0
+
+  %% ------------------------------------------------------- build sequence
+  subgraph BUILD["CI stage: build — scripts/build_ruleset.py build(root)"]
+
+    S0["0 · load config, override manifest, filter policy"]
+    G1{{"1 · check_output_formats<br/>any format ≠ source?"}}
+    S2["2 · corpus.load_corpus → Corpus of RuleRecord<br/>identifier · meta · tags · condition_terms · imports · origin"]
+    G3{{"3 · check_overrides.validate<br/>stale override with no recorded decision?"}}
+    S4["4 · corpus.strip_superseded<br/>→ vendor_remainder + removed_ids<br/>post_strip = vendor_remainder + overrides + custom"]
+    G5{{"5 · check_collisions<br/>duplicate identifier?"}}
+    G6{{"6 · check_modules<br/>import outside yara_modules?"}}
+    G7{{"7 · check_dates<br/>unparsable meta date?"}}
+    S8["8 · apply_filters.run(pre_excluded=date_drops)"]
+    G9{{"9 · topological_order — Kahn on min-heap<br/>(GROUP_ORDER, input_position, identifier)<br/>vendor 0 → overrides 1 → custom 2<br/>cycle?"}}
+    S11["10-11 · union imports · build_source<br/>→ merged_source + rule_index, in memory<br/>nothing written to disk yet"]
+    G12{{"12 · compile_rules — yara.compile(source=…)<br/>THE VALIDATION AUTHORITY<br/>SyntaxError?"}}
+    S13["13 · write dist/merged_rules.yara"]
+    S14["14 · write_manifest → dist/build_manifest.json"]
+
+    S0 --> G1
+    G1 -->|yes| X1["BLOCK · D-2, source only"]
+    G1 -->|no| S2
+    S2 --> G3
+    G3 -->|"no decision"| X3["BLOCK<br/>STALE OVERRIDE CHECKPOINT"]
+    G3 -->|"discard"| W3["warn · REQUIRED CLEANUP"]
+    G3 -->|"keep / not stale"| S4
+    W3 --> S4
+    S4 --> G5
+    G5 -->|yes| X5["BLOCK<br/>source defect · checked pre-filter"]
+    G5 -->|no| G6
+    G6 -->|yes| X6["BLOCK<br/>compile gate cannot catch this"]
+    G6 -->|no| G7
+    G7 -->|"on_unparsable: fail"| X7["BLOCK"]
+    G7 -->|"warn_and_drop"| W7["warn + drop offenders<br/>date_drops: filter_id=null<br/>reason 'unparsable date: …'"]
+    G7 -->|"all parseable"| S8
+    W7 --> S8
+    S8 --> G9
+    G9 -->|yes| X9["BLOCK · cycle detected"]
+    G9 -->|no| S11
+    S11 --> G12
+    G12 -->|yes| X12["BLOCK · attributed to a rule<br/>via _locate_rule bisect<br/>no artifact is emitted"]
+    G12 -->|no| S13
+    S13 --> S14
+  end
+
+  %% ------------------------------------------------------- filter engine
+  subgraph FILT["8 · Filter policy — scripts/apply_filters.py"]
+    F0["seed exclusion_record with pre_excluded<br/>(the stage-7 date drops)"]
+    F1["_resolve_rule · specificity ladder<br/>rule:&lt;Identifier&gt; 0 &gt; vendor/custom/overrides 1 &gt; global 2<br/>no match → default_mode (include_all, D-9)"]
+    F2["same-specificity conflict<br/>→ EXCLUDE WINS (D-8, hardcoded)"]
+    F3{{"cross-check 1 · _coverage_gap_check<br/>excluded override whose supersedes<br/>are already stripped?"}}
+    F4{{"cross-check 2 · _referential_integrity_check<br/>included rule references an excluded id?"}}
+    F5{{"cross-check 3 · _floor_guard<br/>included &lt; min_output_rules?"}}
+    FOK["→ included_rules + exclusion_record"]
+
+    F0 --> F1 --> F2 --> F3
+    F3 -->|"no decision"| XF3["BLOCK<br/>coverage gap checkpoint"]
+    F3 -->|"discard"| WF3["warn · REQUIRED ACTION"]
+    F3 -->|"keep / no gap"| F4
+    WF3 --> F4
+    F4 -->|yes| XF4["BLOCK<br/>would break compilation"]
+    F4 -->|no| F5
+    F5 -->|"on_empty_output: fail"| XF5["BLOCK"]
+    F5 -->|"on_empty_output: warn"| WF5["warn"]
+    F5 -->|"above floor"| FOK
+    WF5 --> FOK
+  end
+
+  S8 -.->|expands to| F0
+  FOK -.->|"returns to stage 9"| G9
+
+  %% ------------------------------------------------------------- outputs
+  subgraph OUT["Build artifacts — dist/ (gitignored, CI artifact)"]
+    direction LR
+    A1["dist/merged_rules.yara<br/>single compilation unit, deterministic order<br/>no .yarc — Corelight compiles internally (D-2)"]
+    A2["dist/build_manifest.json<br/>build_version · timestamp · tool_versions<br/>rule_counts · removed_vendor_rules<br/>filtered_rules · source_hashes"]
+  end
+
+  S13 --> A1
+  S14 --> A2
+
+  %% ------------------------------------------------------------------ CI
+  subgraph CI["CI stages after build — .gitlab-ci.yml"]
+    direction TB
+    T1["test · pytest tests/<br/>validates the built dist/, never rebuilds<br/>→ test-results/ + junit.xml (when: always)"]
+    T2["pcap-test · Phase 8, deferred pending D-3"]
+    P1["package · tag only<br/>curl upload → generic Package Registry<br/>yara-ruleset/$CI_COMMIT_TAG/"]
+    R1["release · tag only<br/>release-cli get probe → create (idempotent)<br/>two --assets-link, tied to inputs by source_hashes"]
+
+    T1 --> P1 --> R1
+  end
+
+  A1 --> T1
+  A2 --> T1
+  T1 -.-> T2
+
+  subgraph IMG["CI stage: image — runs only on ci/Dockerfile or requirements.txt changes"]
+    K1["build-ci-image · kaniko<br/>→ ci:latest (floating) + ci:$CI_COMMIT_SHA (immutable)"]
+  end
+
+  K1 -.->|"$CI_IMAGE for lint / build / test"| LINT
+
+  %% ------------------------------------------------------------- wiring
+  V --> S2
+  O --> S2
+  C --> S2
+  V -.-> L1
+  O -.-> L1
+  C -.-> L1
+
+  CB -.-> S0
+  OM -.-> S0
+  FP -.-> S0
+  CB -.-> G1
+  CB -.-> G6
+  CB -.-> G7
+  CB -.->|external_variables| G12
+  OM -.-> G3
+  OM -.-> S4
+  OM -.->|supersedes| F3
+  SD -.-> G3
+  FP -.-> F1
+  CD -.-> F3
+  CB -.->|required_meta · meta_dates| L1
+  FP -.-> L2
+
+  %% ------------------------------------------------------------- styling
+  classDef io fill:#e8f0fe,stroke:#3b5bdb,stroke-width:1px,color:#10193a;
+  classDef stage fill:#f1f3f5,stroke:#495057,stroke-width:1px,color:#141618;
+  classDef gate fill:#fff4e6,stroke:#e8590c,stroke-width:2px,color:#3d1c02;
+  classDef block fill:#ffe3e3,stroke:#c92a2a,stroke-width:2px,color:#3b0708;
+  classDef warn fill:#fff9db,stroke:#f08c00,stroke-width:1px,color:#3d2b02;
+  classDef deferred fill:#f8f9fa,stroke:#adb5bd,stroke-width:1px,stroke-dasharray:4 3,color:#495057;
+
+  class V,O,C,CB,OM,FP,SD,CD,A1,A2 io;
+  class S0,S2,S4,S8,S11,S13,S14,L1,L2,F0,F1,F2,FOK,K1,T1,P1,R1 stage;
+  class G1,G3,G5,G6,G7,G9,G12,F3,F4,F5,LB gate;
+  class X1,X3,X5,X6,X7,X9,X12,XF3,XF4,XF5,XL block;
+  class W3,W7,WF3,WF5,LW warn;
+  class T2 deferred;

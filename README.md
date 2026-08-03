@@ -18,6 +18,12 @@ Detection engineers commit rules into one of three trees, declare overrides in a
 
 The pipeline produces artifacts; deploying them to the detection platform is a separate, out-of-scope process.
 
+[![Build pipeline](docs/build_pipeline.svg)](docs/BUILD_PIPELINE.md)
+
+The diagram above is the whole flow in one picture — every stage, every gate, and what each
+failure costs. [docs/BUILD_PIPELINE.md](docs/BUILD_PIPELINE.md) has the legend and the notes
+on why the stage order is what it is.
+
 ## Core concepts
 
 **Three rule classes.** *Vendor* rules arrive as one or more `.yara` files from a third party and are committed as received. *Custom* rules are written in-house. *Overrides* are in-house rules that replace specific vendor rules.
