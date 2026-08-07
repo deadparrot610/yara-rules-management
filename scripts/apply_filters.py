@@ -117,8 +117,10 @@ def _meta_date_matches(spec, rule, meta_dates=None, as_of=None) -> bool:
     comparison time, and never touches rule.raw_text — that string is emitted
     verbatim into dist/, and vendor files are committed as received.
 
-    A relative bound (`older_than: 5y`) resolves against `as_of` into the same
-    strict upper bound `before` expresses; the two AND, earlier wins.
+    The relative bounds (`older_than: 5y`, `newer_than: 30d`) resolve against
+    `as_of` into the same strict bounds `before` and `after` express; each ANDs
+    with its absolute counterpart, so the tighter of the two wins. Both together
+    are a rolling window.
 
     A rule missing the field is simply not selected (returns False) — an
     undated rule is never aged out. A field that is present but unreadable is a
@@ -128,6 +130,7 @@ def _meta_date_matches(spec, rule, meta_dates=None, as_of=None) -> bool:
     """
     try:
         before = spec.effective_before(as_of)
+        after = spec.effective_after(as_of)
     except ValueError as exc:
         raise PipelineError(str(exc)) from exc
     raw = rule.meta.get(spec.field)
@@ -142,7 +145,7 @@ def _meta_date_matches(spec, rule, meta_dates=None, as_of=None) -> bool:
             f"{config_schema.describe_accepted_dates(meta_dates)}; "
             f"run scripts/lint.py for the full list of offenders"
         ) from exc
-    if spec.after is not None and not value > spec.after:
+    if after is not None and not value > after:
         return False
     if before is not None and not value < before:
         return False

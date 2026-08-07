@@ -192,19 +192,23 @@ filters:
 
 **`meta_date` range selector.** Compares a date-valued meta field (`field`, values in `YYYY-MM-DD`) against up to four bounds, all AND-ed: `before` (`<`) and `after` (`>`) are strict; `on_or_before` (`<=`) and `on_or_after` (`>=`) are inclusive. "Between two dates" = supply a lower and an upper bound together. A targeted rule that lacks the field is simply not selected. Rule values are read through `meta_dates` (§6), so a vendor rule dated `04/18/2026` still answers a bound correctly; a rule whose field is present but unreadable never reaches the filter engine — the unparsable-date gate has already failed the build or dropped the rule. A malformed bound in the policy itself is always strict ISO and a `ConfigError` at load.
 
-**Relative bounds (`older_than`).** A fifth key inside `meta_date` expresses the upper bound as
-an age rather than a date: `older_than: 5y` is `before: <as_of − 5y>`, with the same strict `<`.
-The duration is an integer plus `d`, `m` or `y`; months and years are calendar arithmetic with
-the day clamped to the target month's end (one year before 2024-02-29 is 2023-02-28). Given
-alongside `before`, the two AND and the earlier bound wins. This exists because an absolute bound
-encodes a policy intent ("retire anything not touched in five years") as a fact that expires the
-day it is written, obliging someone to remember to edit it.
+**Relative bounds (`older_than` / `newer_than`).** Two further keys inside `meta_date` express
+the strict bounds as an age rather than a date: `older_than: 5y` is `before: <as_of − 5y>` and
+`newer_than: 30d` is `after: <as_of − 30d>`, each with the same strict comparison as its
+absolute counterpart. The duration is an integer plus `d`, `m` or `y`; months and years are
+calendar arithmetic with the day clamped to the target month's end (one year before 2024-02-29
+is 2023-02-28). Given alongside its counterpart, the pair ANDs and the tighter bound wins — the
+earlier of `older_than`/`before`, the later of `newer_than`/`after`. Together the two relative
+bounds are a rolling window. This exists because an absolute bound encodes a policy intent
+("retire anything not touched in five years") as a fact that expires the day it is written,
+obliging someone to remember to edit it.
 
 The reference date is resolved by `apply_filters.resolve_as_of` — `--as-of` > the policy file's
-`as_of:` > today — once per run, so every rule in one build answers the same window. It is stored
-unresolved on `FilterDateRange` (as the parsed amount/unit) because the policy loader has no
-reference date; `FilterDateRange.effective_before(as_of)` does the resolution, and raises rather
-than defaulting to today if a relative bound reaches it without one. Defaulting there would let a
+`as_of:` > today — once per run, so every rule in one build answers the same window. Durations
+are stored unresolved on `FilterDateRange` (as the parsed amount/unit) because the policy loader
+has no reference date; `effective_before(as_of)` / `effective_after(as_of)` do the resolution
+through one shared helper, and raise rather than defaulting to today if a relative bound reaches
+them without one. Defaulting there would let a
 non-reproducible build pass silently, which is the whole risk this feature introduces.
 
 That risk is bounded rather than eliminated: NFR-6 becomes "identical inputs *and identical

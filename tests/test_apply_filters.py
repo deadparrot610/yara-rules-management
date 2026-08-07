@@ -372,6 +372,72 @@ def test_older_than_normalizes_a_non_iso_rule_value():
     assert action == "exclude"
 
 
+# --- selector matching: relative recency (newer_than) ----------------------
+
+def test_newer_than_excludes_a_rule_inside_the_window():
+    rule = _dated("Foo", "2026-07-09")  # one day after as_of - 30d
+    action, _ = apply_filters._resolve_rule(
+        rule, [_date_filter(newer_than=(30, "d"))], "include_all", None, AS_OF)
+    assert action == "exclude"
+
+
+def test_newer_than_is_strict_at_the_cutoff():
+    # as_of - 30d exactly: not *newer* than 30 days, so it falls through.
+    rule = _dated("Foo", "2026-07-08")
+    action, _ = apply_filters._resolve_rule(
+        rule, [_date_filter(newer_than=(30, "d"))], "include_all", None, AS_OF)
+    assert action == "include"
+
+
+def test_newer_than_tracks_the_reference_date():
+    rule = _dated("Foo", "2026-07-20")
+    filt = _date_filter(newer_than=(30, "d"))
+    assert apply_filters._resolve_rule(
+        rule, [filt], "include_all", None, date(2026, 8, 7))[0] == "exclude"
+    assert apply_filters._resolve_rule(
+        rule, [filt], "include_all", None, date(2026, 12, 1))[0] == "include"
+
+
+def test_newer_than_and_after_intersect_on_the_later_bound():
+    # Both are lower bounds and they AND, so only a rule above *both* matches.
+    rule = _dated("Foo", "2026-07-20")            # cutoff(30d) = 2026-07-08
+    filt = _date_filter(newer_than=(30, "d"), after=date(2026, 8, 1))
+    assert apply_filters._resolve_rule(
+        rule, [filt], "include_all", None, AS_OF)[0] == "include"
+    newer = _dated("Bar", "2026-08-02")
+    assert apply_filters._resolve_rule(
+        newer, [filt], "include_all", None, AS_OF)[0] == "exclude"
+
+
+def test_newer_than_ignores_a_rule_without_the_field():
+    rule = make_rule("Foo", origin="vendor", meta={"author": "x"})
+    action, responsible = apply_filters._resolve_rule(
+        rule, [_date_filter(newer_than=(30, "d"))], "include_all", None, AS_OF)
+    assert action == "include"
+    assert responsible is None
+
+
+def test_newer_than_without_a_reference_date_raises():
+    rule = _dated("Foo", "2026-08-01")
+    with pytest.raises(PipelineError, match="newer_than needs a reference date"):
+        apply_filters._resolve_rule(
+            rule, [_date_filter(newer_than=(30, "d"))], "include_all")
+
+
+def test_rolling_window_selects_only_between_the_two_cutoffs():
+    # newer_than 2y (2024-08-07) .. older_than 6m (2026-02-07), both strict.
+    filt = _date_filter(newer_than=(2, "y"), older_than=(6, "m"))
+    inside = _dated("Inside", "2025-06-01")
+    too_old = _dated("TooOld", "2023-01-01")
+    too_new = _dated("TooNew", "2026-07-13")
+    assert apply_filters._resolve_rule(
+        inside, [filt], "include_all", None, AS_OF)[0] == "exclude"
+    assert apply_filters._resolve_rule(
+        too_old, [filt], "include_all", None, AS_OF)[0] == "include"
+    assert apply_filters._resolve_rule(
+        too_new, [filt], "include_all", None, AS_OF)[0] == "include"
+
+
 # --- as_of resolution ------------------------------------------------------
 
 def test_resolve_as_of_precedence():
@@ -404,6 +470,25 @@ def test_run_applies_a_relative_bound_end_to_end(tmp_path):
     assert [r.identifier for r in included] == ["Fresh"]
     assert record == [{"identifier": "Stale", "filter_id": "F-retire-stale",
                        "reason": ""}]
+
+
+def test_run_applies_a_rolling_window_end_to_end(tmp_path):
+    rules = [_dated("Ancient", "2019-02-02"),
+             _dated("Aging", "2025-06-01"),
+             _dated("Fresh", "2026-07-13")]
+    policy = FilterPolicy(
+        default_mode="include_all",
+        min_output_rules=0,
+        filters=[_filter("exclude", scope="vendor", fid="F-window",
+                         match=FilterMatch(meta_date=FilterDateRange(
+                             field="date",
+                             newer_than=(2, "y"), older_than=(6, "m"))))],
+    )
+    included, record = apply_filters.run(
+        rules, policy, tmp_path, [], _config(meta_dates=_meta_dates()),
+        as_of=AS_OF)
+    assert [r.identifier for r in included] == ["Ancient", "Fresh"]
+    assert [e["identifier"] for e in record] == ["Aging"]
 
 
 def test_run_falls_back_to_the_policy_pinned_as_of(tmp_path):

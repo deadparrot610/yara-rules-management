@@ -527,6 +527,56 @@ def test_effective_before_requires_as_of_for_a_relative_bound():
         md.effective_before(None)
 
 
+def test_filter_match_meta_date_parses_newer_than():
+    md = _meta_date_entry({"field": "date", "newer_than": "30d"}).match.meta_date
+    assert md.newer_than == (30, "d")
+    assert md.after is None
+
+
+def test_filter_match_newer_than_satisfies_the_bound_requirement():
+    assert _meta_date_entry({"field": "date", "newer_than": "1d"}) is not None
+
+
+@pytest.mark.parametrize("bad", ["30", "30w", "0d", "recently", 30])
+def test_filter_match_meta_date_malformed_newer_than(bad):
+    with pytest.raises(ConfigError, match="newer_than"):
+        _meta_date_entry({"field": "date", "newer_than": bad})
+
+
+def test_effective_after_resolves_against_as_of():
+    md = _meta_date_entry({"field": "date", "newer_than": "30d"}).match.meta_date
+    assert md.effective_after(date(2026, 8, 7)) == date(2026, 7, 8)
+
+
+def test_effective_after_takes_the_later_of_two_lower_bounds():
+    # Mirror of effective_before: lower bounds AND, so the later one constrains.
+    md = _meta_date_entry({
+        "field": "date", "newer_than": "30d", "after": "2026-01-01",
+    }).match.meta_date
+    assert md.effective_after(date(2026, 8, 7)) == date(2026, 7, 8)
+    assert md.effective_after(date(2026, 1, 5)) == date(2026, 1, 1)
+
+
+def test_effective_after_without_newer_than_needs_no_as_of():
+    md = _meta_date_entry({"field": "date", "after": "2026-05-01"}).match.meta_date
+    assert md.effective_after(None) == date(2026, 5, 1)
+
+
+def test_effective_after_requires_as_of_for_a_relative_bound():
+    md = _meta_date_entry({"field": "date", "newer_than": "30d"}).match.meta_date
+    with pytest.raises(ValueError, match="newer_than needs a reference date"):
+        md.effective_after(None)
+
+
+def test_relative_bounds_together_form_a_window():
+    md = _meta_date_entry({
+        "field": "date", "newer_than": "2y", "older_than": "6m",
+    }).match.meta_date
+    as_of = date(2026, 8, 7)
+    assert md.effective_after(as_of) == date(2024, 8, 7)
+    assert md.effective_before(as_of) == date(2026, 2, 7)
+
+
 # --- policy-level as_of ----------------------------------------------------
 
 def test_filter_policy_parses_as_of():

@@ -153,12 +153,18 @@ compared as `2026-04-18` — the time is truncated and the offset ignored, never
 another day. Non-ISO timestamps work too once declared (`"%m/%d/%Y %H:%M"`). Bounds in this
 policy stay strict ISO **date**-only: a bound with a time in it is a `ConfigError` at load.
 
-### `older_than` — a relative age cutoff
+### `older_than` / `newer_than` — relative bounds
 
-`older_than` lives inside `meta_date` and is the same strict upper bound as `before`, written
-relative to a reference date instead of as a fixed calendar day. `older_than: 5y` means
-`before: <as_of minus five years>` — it expresses "retire anything not touched in five years"
-once, instead of an absolute bound that has to be edited on a schedule.
+These two live inside `meta_date` and are the same strict bounds as `before` and `after`,
+written relative to a reference date instead of as fixed calendar days:
+
+| Relative | Equivalent to | Reads as |
+|---|---|---|
+| `older_than: 5y` | `before: <as_of − 5y>` | dated more than five years ago |
+| `newer_than: 30d` | `after: <as_of − 30d>` | dated within the last 30 days |
+
+They express an intent — "retire anything not touched in five years" — once, instead of an
+absolute bound that has to be edited on a schedule.
 
 ```yaml
 match:
@@ -167,13 +173,25 @@ match:
     older_than: 5y
 ```
 
+Together they are a **rolling window**. `newer_than: 2y` with `older_than: 6m` selects rules
+aged between six months and two years, and keeps meaning that next quarter:
+
+```yaml
+match:
+  meta_date:
+    field: date
+    newer_than: 2y      # lower bound: not older than two years
+    older_than: 6m      # upper bound: at least six months old
+```
+
 The duration is an integer followed by `d`, `m`, or `y` — `730d`, `18m`, `5y`. No signs, no
 compound forms (`1y6m`), no other units, and zero is rejected. Months and years are **calendar**
 arithmetic, not a fixed day count: one year before 2024-02-29 is 2023-02-28, and one month
 before 2026-03-31 is 2026-02-28.
 
-`older_than` and `before` may both be given; like every other selector key they AND, so the
-earlier of the two wins. `older_than` on its own satisfies the "at least one bound" rule.
+A relative bound may be given alongside its absolute counterpart; like every other selector key
+they AND, so the **tighter** one wins — the earlier of `older_than`/`before`, the later of
+`newer_than`/`after`. Either relative bound on its own satisfies the "at least one bound" rule.
 
 **The reference date** (`as_of`) resolves in this order:
 
@@ -188,10 +206,10 @@ straddles midnight, and the resolved value is written to `build_manifest.json` a
 > **Determinism (NFR-6).** With a relative bound in play, "identical inputs produce identical
 > output" reads *identical inputs **and identical `as_of`***. The manifest records the `as_of`
 > a build used, and passing it back with `--as-of` reproduces that build exactly. A policy with
-> no `older_than` bound is unaffected — nothing reads the reference date.
+> no relative bound is unaffected — nothing reads the reference date.
 
 A rule that **lacks** the named field is simply not selected — an undated rule is never aged
-out by `older_than`. (Vendor rules are exempt from `required_meta`, so a vendor feed without
+out. (Vendor rules are exempt from `required_meta`, so a vendor feed without
 dates passes an age cutoff untouched; use a `name_glob` or `meta` selector if you need to reach
 those.) A rule whose field is **present
 but unreadable** never reaches the filter engine: the build's unparsable-date gate runs first
@@ -273,6 +291,33 @@ filters:
       field: last_modified
       older_than: 5y
   reason: "Not refreshed in five years"
+```
+
+**Ship only rules from the last quarter (rolling allowlist):**
+```yaml
+default_mode: exclude_all
+filters:
+  - id: F-recent-only
+    scope: global
+    action: include
+    match:
+      meta_date:
+        field: date
+        newer_than: 90d
+    reason: "Pilot profile — recent detections only"
+```
+
+**Quarantine the middle of the window (aged but not ancient):**
+```yaml
+- id: F-quarantine-aging
+  scope: vendor
+  action: exclude
+  match:
+    meta_date:
+      field: date
+      newer_than: 2y     # not older than two years
+      older_than: 6m     # but at least six months old
+  reason: "Aging vendor rules pending review"
 ```
 
 **Drop a whole naming family:**

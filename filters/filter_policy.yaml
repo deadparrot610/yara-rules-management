@@ -5,7 +5,7 @@ min_output_rules: 1
 filters: []
 
 # as_of: "2026-01-01"
-# Pins the reference date that relative bounds (meta_date.older_than) measure
+# Pins the reference date that relative bounds (older_than/newer_than) measure
 # from. Left unset, a build uses --as-of if given, else today. Set it to freeze
 # the window so this commit filters identically on any day.
 
@@ -23,11 +23,13 @@ filters: []
 # don't control, never to policy we author.
 #
 # A meta_date bound may also be written relative to the reference date:
-#   older_than: 5y   ==  before: <as_of minus five years>
-# Duration is an integer plus 'd', 'm' or 'y' ("730d", "18m", "5y"); months and
-# years are calendar arithmetic. A rule with no value in that field is never
-# aged out. With a relative bound in play, reproducing a build means replaying
-# its as_of (recorded in dist/build_manifest.json) via --as-of.
+#   older_than: 5y    ==  before: <as_of minus five years>
+#   newer_than: 30d   ==  after:  <as_of minus thirty days>
+# Both together are a rolling window. Duration is an integer plus 'd', 'm' or
+# 'y' ("730d", "18m", "5y"); months and years are calendar arithmetic. A rule
+# with no value in that field is never aged out. With a relative bound in play,
+# reproducing a build means replaying its as_of (recorded in
+# dist/build_manifest.json) via --as-of.
 #
 # filters:
 #   - id: F-drop-old-vendor
@@ -59,3 +61,13 @@ filters: []
 #         field: date
 #         on_or_after: "2026-05-01"   # inclusive >=
 #         on_or_before: "2026-06-30"  # inclusive <=
+#
+#   - id: F-rolling-window
+#     description: "Same window, but rolling — no dates to edit next quarter"
+#     scope: global
+#     action: include
+#     match:
+#       meta_date:
+#         field: date
+#         newer_than: 2y       # lower bound: not older than two years
+#         older_than: 6m       # upper bound: at least six months old

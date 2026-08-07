@@ -499,10 +499,12 @@ class FilterDateRange:
     `on_or_after` are inclusive (<= / >=). Supplying a lower and an upper bound
     together expresses a "between" range. At least one bound is required.
 
-    `older_than` is the same upper bound written relative to the build's
-    reference date: 'older_than: 5y' is 'before: <as_of minus five years>'. It is
-    stored as the parsed (amount, unit) pair, because the reference date is not
-    known when the policy file is loaded — see effective_before().
+    `older_than` and `newer_than` are those same strict bounds written relative
+    to the build's reference date: 'older_than: 5y' is 'before: <as_of minus five
+    years>' and 'newer_than: 30d' is 'after: <as_of minus thirty days>'. Together
+    they express a rolling window. Both are stored as the parsed (amount, unit)
+    pair, because the reference date is not known when the policy file is
+    loaded — see effective_before() / effective_after().
     """
     field: str
     before: date | None = None
@@ -510,9 +512,11 @@ class FilterDateRange:
     on_or_before: date | None = None
     on_or_after: date | None = None
     older_than: tuple[int, str] | None = None
+    newer_than: tuple[int, str] | None = None
 
     _BOUNDS = ("before", "after", "on_or_before", "on_or_after")
-    _ALLOWED = {"field", *_BOUNDS, "older_than"}
+    _RELATIVE_BOUNDS = ("older_than", "newer_than")
+    _ALLOWED = {"field", *_BOUNDS, *_RELATIVE_BOUNDS}
 
     @classmethod
     def from_dict(cls, data, source: str, ctx: str) -> "FilterDateRange":
@@ -536,39 +540,51 @@ class FilterDateRange:
                     f"{source}: {ctx}.{key} must be a YYYY-MM-DD date, got {raw!r}"
                 ) from exc
 
-        if data.get("older_than") is not None:
+        for key in cls._RELATIVE_BOUNDS:
+            raw = data.get(key)
+            if raw is None:
+                continue
             try:
-                bounds["older_than"] = parse_duration(data["older_than"])
+                bounds[key] = parse_duration(raw)
             except ValueError as exc:
-                raise ConfigError(
-                    f"{source}: {ctx}.older_than {exc}"
-                ) from exc
+                raise ConfigError(f"{source}: {ctx}.{key} {exc}") from exc
 
         if not bounds:
             raise ConfigError(
                 f"{source}: {ctx} needs at least one of "
-                f"{[*cls._BOUNDS, 'older_than']}"
+                f"{[*cls._BOUNDS, *cls._RELATIVE_BOUNDS]}"
             )
 
         return cls(field=field_name, **bounds)
 
-    def effective_before(self, as_of: date | None) -> date | None:
-        """The strict upper bound, with `older_than` resolved against `as_of`.
+    @staticmethod
+    def _resolve(absolute, duration, key, as_of, tighter):
+        """One strict bound, with its relative form resolved against `as_of`.
 
-        Both upper bounds AND like every other selector key, so the earlier one
-        wins. Callers must supply an as_of whenever older_than is set; resolving
-        a default here would let a non-reproducible build slip through unnoticed
-        (NFR-6), so it is the caller's job and a missing one is an error.
+        The absolute and relative forms of a bound AND like every other selector
+        key, so `tighter` (min for the upper bound, max for the lower) picks the
+        one that actually constrains. Callers must supply an as_of whenever a
+        relative bound is set; resolving a default here would let a
+        non-reproducible build slip through unnoticed (NFR-6), so it is the
+        caller's job and a missing one is an error.
         """
-        if self.older_than is None:
-            return self.before
+        if duration is None:
+            return absolute
         if as_of is None:
             raise ValueError(
-                "meta_date.older_than needs a reference date; pass as_of "
-                "(--as-of, or 'as_of:' in filters/filter_policy.yaml)"
+                f"meta_date.{key} needs a reference date; pass as_of "
+                f"(--as-of, or 'as_of:' in filters/filter_policy.yaml)"
             )
-        cutoff = shift_back(as_of, *self.older_than)
-        return cutoff if self.before is None else min(self.before, cutoff)
+        cutoff = shift_back(as_of, *duration)
+        return cutoff if absolute is None else tighter(absolute, cutoff)
+
+    def effective_before(self, as_of: date | None) -> date | None:
+        """The strict upper bound, with `older_than` resolved against `as_of`."""
+        return self._resolve(self.before, self.older_than, "older_than", as_of, min)
+
+    def effective_after(self, as_of: date | None) -> date | None:
+        """The strict lower bound, with `newer_than` resolved against `as_of`."""
+        return self._resolve(self.after, self.newer_than, "newer_than", as_of, max)
 
 
 @dataclass
