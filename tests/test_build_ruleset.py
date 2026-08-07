@@ -1,5 +1,8 @@
 """Tests for build ordering, source emission, and error attribution."""
 
+import json
+from datetime import date
+
 import pytest
 
 import build_ruleset
@@ -153,6 +156,28 @@ def test_check_output_formats_source_only():
     build_ruleset.check_output_formats(["source"])  # no raise
     with pytest.raises(PipelineError, match="unsupported output_formats"):
         build_ruleset.check_output_formats(["source", "compiled"])
+
+
+# --- manifest records the reference date -----------------------------------
+
+def test_write_manifest_records_as_of(tmp_path):
+    dest = tmp_path / "dist" / "build_manifest.json"
+    build_ruleset.write_manifest(
+        [make_rule("Ok", origin="vendor")], [], [], [], dest, date(2026, 1, 1))
+    assert json.loads(dest.read_text())["as_of"] == "2026-01-01"
+
+
+def test_build_records_the_as_of_it_filtered_with(root):
+    # The full pipeline against the real repo: an explicit --as-of reaches the
+    # manifest, so the build can be reproduced by replaying it.
+    try:
+        build_ruleset.build(root, date(2020, 6, 15))
+        manifest = json.loads((root / "dist" / "build_manifest.json").read_text())
+        assert manifest["as_of"] == "2020-06-15"
+    finally:
+        # Leave dist/ as the session's `built` fixture produced it — other
+        # modules assert against those artifacts.
+        build_ruleset.build(root)
 
 
 # --- compile validation gate + error attribution ---------------------------

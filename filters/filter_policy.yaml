@@ -4,6 +4,11 @@ on_empty_output: fail
 min_output_rules: 1
 filters: []
 
+# as_of: "2026-01-01"
+# Pins the reference date that relative bounds (meta_date.older_than) measure
+# from. Left unset, a build uses --as-of if given, else today. Set it to freeze
+# the window so this commit filters identically on any day.
+
 # Example filters (uncomment and adapt). Selector keys AND together:
 #   name / name_glob / name_regex  — match on the rule identifier
 #   tags                           — rule carries all listed tags
@@ -17,6 +22,13 @@ filters: []
 # always strict ISO — the declared-format leniency applies to rule input we
 # don't control, never to policy we author.
 #
+# A meta_date bound may also be written relative to the reference date:
+#   older_than: 5y   ==  before: <as_of minus five years>
+# Duration is an integer plus 'd', 'm' or 'y' ("730d", "18m", "5y"); months and
+# years are calendar arithmetic. A rule with no value in that field is never
+# aged out. With a relative bound in play, reproducing a build means replaying
+# its as_of (recorded in dist/build_manifest.json) via --as-of.
+#
 # filters:
 #   - id: F-drop-old-vendor
 #     description: "Retire vendor rules authored before the Q2 refresh"
@@ -27,6 +39,16 @@ filters: []
 #         field: date            # meta field to compare (normalized)
 #         before: "2026-05-01"   # strict <  (after: strict > ), YYYY-MM-DD
 #     reason: "Superseded by refreshed vendor feed"
+#
+#   - id: F-retire-stale
+#     description: "Retire vendor rules not refreshed in five years"
+#     scope: vendor
+#     action: exclude
+#     match:
+#       meta_date:
+#         field: last_modified
+#         older_than: 5y       # relative to as_of; strict <
+#     reason: "Not refreshed in five years"
 #
 #   - id: F-keep-window
 #     description: "Keep only rules dated within a window (between two dates)"

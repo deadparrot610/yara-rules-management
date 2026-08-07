@@ -16,7 +16,7 @@ import bisect
 import heapq
 import hashlib
 import argparse
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import plyara
@@ -299,6 +299,7 @@ def write_manifest(
     exclusion_record: list[dict],
     source_files: list[Path],
     dest: Path,
+    as_of: date,
 ) -> None:
     counts = {origin: sum(1 for r in rules if r.origin == origin)
               for origin in ("vendor", "custom", "overrides")}
@@ -308,6 +309,11 @@ def write_manifest(
         # (branches, MRs, local) carry a dev sentinel so the field is always present.
         "build_version": os.environ.get("CI_COMMIT_TAG") or "0.0.0-dev",
         "timestamp": datetime.now(timezone.utc).isoformat(),
+        # The reference date relative filter bounds (meta_date.older_than) were
+        # resolved against. Unlike everything else here it is not recoverable
+        # from the repo, so without it a build using a relative bound cannot be
+        # reproduced; replay it with --as-of.
+        "as_of": as_of.isoformat(),
         "tool_versions": {
             "plyara": getattr(plyara, "__version__", "unknown"),
             "yara-python": getattr(yara, "__version__", "unknown"),
@@ -339,8 +345,12 @@ def write_manifest(
 # Main
 # ---------------------------------------------------------------------------
 
-def build(root: Path) -> tuple[list[RuleRecord], list[str], list[dict], Path]:
+def build(root: Path, as_of: date | None = None) -> tuple[list[RuleRecord], list[str], list[dict], Path]:
     """Run the full pipeline. Returns (ordered, removed_ids, exclusion_record, output_path).
+
+    as_of overrides the reference date for relative filter bounds; None resolves
+    to the policy's pinned as_of, else today. It is resolved once here, before
+    any filtering, and recorded in the manifest.
 
     Raises ConfigError / PipelineError on any failure; the CLI boundary (main) turns
     those into an ERROR message and exit 1. Public entry point — the test harness
@@ -349,6 +359,7 @@ def build(root: Path) -> tuple[list[RuleRecord], list[str], list[dict], Path]:
     config = load_config(root)
     manifest_entries = load_manifest(root)
     filter_policy = load_filter_policy(root)
+    as_of = apply_filters.resolve_as_of(filter_policy, as_of)
 
     check_output_formats(config.output_formats)
 
@@ -392,6 +403,7 @@ def build(root: Path) -> tuple[list[RuleRecord], list[str], list[dict], Path]:
         manifest_entries,
         config,
         pre_excluded=date_drops,
+        as_of=as_of,
     )
 
     # --- Topological order ---
@@ -419,19 +431,27 @@ def build(root: Path) -> tuple[list[RuleRecord], list[str], list[dict], Path]:
 
     # --- Write manifest ---
     write_manifest(ordered, removed_ids, exclusion_record,
-                   corpus_data.source_files, dist / "build_manifest.json")
+                   corpus_data.source_files, dist / "build_manifest.json", as_of)
 
     return ordered, removed_ids, exclusion_record, output_path
 
 
 def main() -> None:
-    argparse.ArgumentParser(description="Build the merged YARA ruleset.").parse_args()
+    parser = argparse.ArgumentParser(description="Build the merged YARA ruleset.")
+    parser.add_argument(
+        "--as-of", metavar="YYYY-MM-DD",
+        help="Reference date for relative filter bounds (meta_date.older_than). "
+             "Defaults to the filter policy's as_of, else today. Recorded in the "
+             "build manifest; pass it back to reproduce an earlier build.",
+    )
+    args = parser.parse_args()
     setup_logging()
 
     root = ROOT
     logger.info("Starting ruleset build (root: {})", root)
     try:
-        ordered, removed_ids, exclusion_record, output_path = build(root)
+        as_of = apply_filters.parse_as_of_arg(args.as_of)
+        ordered, removed_ids, exclusion_record, output_path = build(root, as_of)
     except (ConfigError, PipelineError) as exc:
         logger.error("Build failed: {}", exc)
         sys.exit(1)

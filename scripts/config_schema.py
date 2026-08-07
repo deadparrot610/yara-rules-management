@@ -12,6 +12,8 @@ load config through the load_* functions here.
 
 from __future__ import annotations
 
+import calendar
+import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -129,6 +131,59 @@ def parse_iso_date(value) -> date:
     if not isinstance(value, str):
         raise ValueError(f"expected a YYYY-MM-DD string, got {type(value).__name__}")
     return datetime.strptime(value, DATE_FORMAT).date()
+
+
+# ---------------------------------------------------------------------------
+# Relative age durations
+#
+# A meta_date bound may be written relative to a reference date ('older_than:
+# 5y') instead of as a fixed calendar day. The duration is parsed here into an
+# (amount, unit) pair and only resolved to a date later, against the build's
+# as_of — the policy file has no reference date at load time.
+# ---------------------------------------------------------------------------
+
+DURATION_UNITS = {"d": "days", "m": "months", "y": "years"}
+DURATION_SYNTAX = "an integer followed by 'd', 'm' or 'y' (e.g. '730d', '18m', '5y')"
+
+_DURATION_RE = re.compile(r"^(\d+)([dmy])$")
+
+
+def parse_duration(value) -> tuple[int, str]:
+    """Parse a relative duration like '5y' into (amount, unit).
+
+    Raises ValueError on anything else. Deliberately narrow: no whitespace, no
+    signs, no compound forms ('1y6m'), no week or hour units — a duration in a
+    filter policy is read far more often than it is written, and every extra
+    accepted spelling is one more way for two policies to say the same thing.
+    Zero is rejected: 'older_than: 0d' is a bound that means "everything before
+    today", which the author almost certainly did not intend to write that way.
+    """
+    if not isinstance(value, str):
+        raise ValueError(f"expected {DURATION_SYNTAX}, got {type(value).__name__}")
+    m = _DURATION_RE.match(value)
+    if not m:
+        raise ValueError(f"expected {DURATION_SYNTAX}, got {value!r}")
+    amount = int(m.group(1))
+    if amount == 0:
+        raise ValueError(f"must be a positive duration, got {value!r}")
+    return amount, m.group(2)
+
+
+def shift_back(ref: date, amount: int, unit: str) -> date:
+    """Subtract a parsed duration from `ref`.
+
+    Months and years are calendar arithmetic, not a fixed number of days, so
+    '1y' before 2026-08-07 is 2026-08-07 minus a year on the calendar. When the
+    target month is shorter the day clamps to its last day: one year before a
+    leap day is Feb 28, and one month before Mar 31 is Feb 28/29.
+    """
+    if unit == "d":
+        return ref - timedelta(days=amount)
+    months = amount * 12 if unit == "y" else amount
+    total = ref.year * 12 + (ref.month - 1) - months
+    year, month = divmod(total, 12)
+    month += 1
+    return date(year, month, min(ref.day, calendar.monthrange(year, month)[1]))
 
 
 # ---------------------------------------------------------------------------
@@ -443,15 +498,21 @@ class FilterDateRange:
     every supplied bound. `before`/`after` are strict (< / >); `on_or_before`/
     `on_or_after` are inclusive (<= / >=). Supplying a lower and an upper bound
     together expresses a "between" range. At least one bound is required.
+
+    `older_than` is the same upper bound written relative to the build's
+    reference date: 'older_than: 5y' is 'before: <as_of minus five years>'. It is
+    stored as the parsed (amount, unit) pair, because the reference date is not
+    known when the policy file is loaded — see effective_before().
     """
     field: str
     before: date | None = None
     after: date | None = None
     on_or_before: date | None = None
     on_or_after: date | None = None
+    older_than: tuple[int, str] | None = None
 
     _BOUNDS = ("before", "after", "on_or_before", "on_or_after")
-    _ALLOWED = {"field", *_BOUNDS}
+    _ALLOWED = {"field", *_BOUNDS, "older_than"}
 
     @classmethod
     def from_dict(cls, data, source: str, ctx: str) -> "FilterDateRange":
@@ -474,12 +535,40 @@ class FilterDateRange:
                 raise ConfigError(
                     f"{source}: {ctx}.{key} must be a YYYY-MM-DD date, got {raw!r}"
                 ) from exc
+
+        if data.get("older_than") is not None:
+            try:
+                bounds["older_than"] = parse_duration(data["older_than"])
+            except ValueError as exc:
+                raise ConfigError(
+                    f"{source}: {ctx}.older_than {exc}"
+                ) from exc
+
         if not bounds:
             raise ConfigError(
-                f"{source}: {ctx} needs at least one of {list(cls._BOUNDS)}"
+                f"{source}: {ctx} needs at least one of "
+                f"{[*cls._BOUNDS, 'older_than']}"
             )
 
         return cls(field=field_name, **bounds)
+
+    def effective_before(self, as_of: date | None) -> date | None:
+        """The strict upper bound, with `older_than` resolved against `as_of`.
+
+        Both upper bounds AND like every other selector key, so the earlier one
+        wins. Callers must supply an as_of whenever older_than is set; resolving
+        a default here would let a non-reproducible build slip through unnoticed
+        (NFR-6), so it is the caller's job and a missing one is an error.
+        """
+        if self.older_than is None:
+            return self.before
+        if as_of is None:
+            raise ValueError(
+                "meta_date.older_than needs a reference date; pass as_of "
+                "(--as-of, or 'as_of:' in filters/filter_policy.yaml)"
+            )
+        cutoff = shift_back(as_of, *self.older_than)
+        return cutoff if self.before is None else min(self.before, cutoff)
 
 
 @dataclass
@@ -608,9 +697,13 @@ class FilterPolicy:
     min_output_rules: int = 1
     filters: list[FilterEntry] = field(default_factory=list)
     version: int | None = None
+    # Pins the reference date for relative bounds (meta_date.older_than). Absent
+    # means "whatever the build resolves", which is --as-of or today; setting it
+    # freezes the window so the same commit filters identically on any day.
+    as_of: date | None = None
 
     _ALLOWED = {"default_mode", "on_empty_output", "min_output_rules",
-                "filters", "version"}
+                "filters", "version", "as_of"}
 
     @classmethod
     def from_dict(cls, data, source: str) -> "FilterPolicy":
@@ -624,6 +717,16 @@ class FilterPolicy:
         filters = [FilterEntry.from_dict(f, source, i)
                    for i, f in enumerate(raw_filters)]
 
+        as_of = None
+        if data.get("as_of") is not None:
+            try:
+                as_of = parse_iso_date(data["as_of"])
+            except ValueError as exc:
+                raise ConfigError(
+                    f"{source}: as_of must be a quoted YYYY-MM-DD date, "
+                    f"got {data['as_of']!r}"
+                ) from exc
+
         return cls(
             default_mode=_enum(
                 _optional(data, "default_mode", str, source, "include_all"),
@@ -634,6 +737,7 @@ class FilterPolicy:
             min_output_rules=_optional(data, "min_output_rules", int, source, 1),
             filters=filters,
             version=_optional(data, "version", int, source),
+            as_of=as_of,
         )
 
 

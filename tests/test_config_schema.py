@@ -450,6 +450,102 @@ def test_filter_match_meta_date_malformed_bound(bad):
         _meta_date_entry({"field": "date", "before": bad})
 
 
+# --- relative durations (meta_date.older_than) -----------------------------
+
+@pytest.mark.parametrize("value,expected", [
+    ("5y", (5, "y")),
+    ("18m", (18, "m")),
+    ("730d", (730, "d")),
+    ("1d", (1, "d")),
+])
+def test_parse_duration_accepts(value, expected):
+    assert config_schema.parse_duration(value) == expected
+
+
+@pytest.mark.parametrize("bad", [
+    "5", "y", "", "5w", "5Y", "-1d", "0d", "1y6m", " 5y", "5 y", "5.5y", 5, None,
+])
+def test_parse_duration_rejects(bad):
+    with pytest.raises(ValueError):
+        config_schema.parse_duration(bad)
+
+
+@pytest.mark.parametrize("ref,amount,unit,expected", [
+    (date(2026, 8, 7), 30, "d", date(2026, 7, 8)),
+    (date(2026, 8, 7), 1, "m", date(2026, 7, 7)),
+    (date(2026, 8, 7), 18, "m", date(2025, 2, 7)),
+    (date(2026, 8, 7), 5, "y", date(2021, 8, 7)),
+    (date(2026, 1, 15), 1, "m", date(2025, 12, 15)),   # year rollover
+    (date(2026, 3, 31), 1, "m", date(2026, 2, 28)),    # day clamps to month end
+    (date(2024, 2, 29), 1, "y", date(2023, 2, 28)),    # leap day
+    (date(2024, 2, 29), 4, "y", date(2020, 2, 29)),    # ...to another leap year
+    (date(2026, 3, 1), 1, "d", date(2026, 2, 28)),
+])
+def test_shift_back(ref, amount, unit, expected):
+    assert config_schema.shift_back(ref, amount, unit) == expected
+
+
+def test_filter_match_meta_date_parses_older_than():
+    md = _meta_date_entry({"field": "last_modified", "older_than": "5y"}).match.meta_date
+    assert md.field == "last_modified"
+    assert md.older_than == (5, "y")
+    assert md.before is None
+
+
+def test_filter_match_older_than_satisfies_the_bound_requirement():
+    # older_than is an upper bound like any other; on its own it is enough.
+    assert _meta_date_entry({"field": "date", "older_than": "1d"}) is not None
+
+
+@pytest.mark.parametrize("bad", ["5", "5w", "0d", "yesterday", 5])
+def test_filter_match_meta_date_malformed_older_than(bad):
+    with pytest.raises(ConfigError, match="older_than"):
+        _meta_date_entry({"field": "date", "older_than": bad})
+
+
+def test_effective_before_resolves_against_as_of():
+    md = _meta_date_entry({"field": "date", "older_than": "5y"}).match.meta_date
+    assert md.effective_before(date(2026, 8, 7)) == date(2021, 8, 7)
+
+
+def test_effective_before_takes_the_earlier_of_two_upper_bounds():
+    md = _meta_date_entry({
+        "field": "date", "older_than": "5y", "before": "2021-01-01",
+    }).match.meta_date
+    assert md.effective_before(date(2026, 8, 7)) == date(2021, 1, 1)
+    assert md.effective_before(date(2020, 1, 1)) == date(2015, 1, 1)
+
+
+def test_effective_before_without_older_than_needs_no_as_of():
+    md = _meta_date_entry({"field": "date", "before": "2026-05-01"}).match.meta_date
+    assert md.effective_before(None) == date(2026, 5, 1)
+
+
+def test_effective_before_requires_as_of_for_a_relative_bound():
+    md = _meta_date_entry({"field": "date", "older_than": "5y"}).match.meta_date
+    with pytest.raises(ValueError, match="needs a reference date"):
+        md.effective_before(None)
+
+
+# --- policy-level as_of ----------------------------------------------------
+
+def test_filter_policy_parses_as_of():
+    assert FilterPolicy.from_dict({"as_of": "2026-01-01"}, SRC).as_of == date(2026, 1, 1)
+
+
+def test_filter_policy_as_of_defaults_to_none():
+    assert FilterPolicy.from_dict({}, SRC).as_of is None
+
+
+@pytest.mark.parametrize("bad", ["01/01/2026", "nope", date(2026, 1, 1)])
+def test_filter_policy_malformed_as_of(bad):
+    # A native YAML date (unquoted in the file) is rejected too: bounds are
+    # quoted ISO strings everywhere in this policy, and one exception would
+    # make the shipped examples wrong.
+    with pytest.raises(ConfigError, match="as_of must be a quoted YYYY-MM-DD"):
+        FilterPolicy.from_dict({"as_of": bad}, SRC)
+
+
 # --- empty/absent filter policy is valid ----------------------------------
 
 def test_filter_policy_none_is_include_all():

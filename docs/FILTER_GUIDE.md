@@ -153,7 +153,47 @@ compared as `2026-04-18` — the time is truncated and the offset ignored, never
 another day. Non-ISO timestamps work too once declared (`"%m/%d/%Y %H:%M"`). Bounds in this
 policy stay strict ISO **date**-only: a bound with a time in it is a `ConfigError` at load.
 
-A rule that **lacks** the named field is simply not selected. A rule whose field is **present
+### `older_than` — a relative age cutoff
+
+`older_than` lives inside `meta_date` and is the same strict upper bound as `before`, written
+relative to a reference date instead of as a fixed calendar day. `older_than: 5y` means
+`before: <as_of minus five years>` — it expresses "retire anything not touched in five years"
+once, instead of an absolute bound that has to be edited on a schedule.
+
+```yaml
+match:
+  meta_date:
+    field: last_modified
+    older_than: 5y
+```
+
+The duration is an integer followed by `d`, `m`, or `y` — `730d`, `18m`, `5y`. No signs, no
+compound forms (`1y6m`), no other units, and zero is rejected. Months and years are **calendar**
+arithmetic, not a fixed day count: one year before 2024-02-29 is 2023-02-28, and one month
+before 2026-03-31 is 2026-02-28.
+
+`older_than` and `before` may both be given; like every other selector key they AND, so the
+earlier of the two wins. `older_than` on its own satisfies the "at least one bound" rule.
+
+**The reference date** (`as_of`) resolves in this order:
+
+1. `--as-of YYYY-MM-DD` on `scripts/build_ruleset.py` or `scripts/apply_filters.py --preview`
+2. `as_of: "YYYY-MM-DD"` at the top level of this policy file — pins the window so the same
+   commit filters identically on any day
+3. today
+
+It is resolved **once per run**, so every rule answers the same window even if the build
+straddles midnight, and the resolved value is written to `build_manifest.json` as `as_of`.
+
+> **Determinism (NFR-6).** With a relative bound in play, "identical inputs produce identical
+> output" reads *identical inputs **and identical `as_of`***. The manifest records the `as_of`
+> a build used, and passing it back with `--as-of` reproduces that build exactly. A policy with
+> no `older_than` bound is unaffected — nothing reads the reference date.
+
+A rule that **lacks** the named field is simply not selected — an undated rule is never aged
+out by `older_than`. (Vendor rules are exempt from `required_meta`, so a vendor feed without
+dates passes an age cutoff untouched; use a `name_glob` or `meta` selector if you need to reach
+those.) A rule whose field is **present
 but unreadable** never reaches the filter engine: the build's unparsable-date gate runs first
 and, per `meta_dates.on_unparsable`, either fails the build or drops the rule. Drops are seeded
 into the exclusion record, so the manifest lists them in `filtered_rules` with a null
@@ -223,6 +263,18 @@ filters:
   reason: "Superseded by refreshed vendor feed"
 ```
 
+**Retire vendor rules not touched in five years (relative, no upkeep):**
+```yaml
+- id: F-retire-stale
+  scope: vendor
+  action: exclude
+  match:
+    meta_date:
+      field: last_modified
+      older_than: 5y
+  reason: "Not refreshed in five years"
+```
+
 **Drop a whole naming family:**
 ```yaml
 - id: F-drop-test-family
@@ -259,6 +311,7 @@ Sample output:
 PREVIEW — filter policy: .../filters/filter_policy.yaml
   default_mode : include_all
   active filters: 3
+  as_of : 2026-08-07
   corpus (post-strip): 214 rules
   included : 209
   excluded : 5
@@ -268,6 +321,14 @@ PREVIEW — filter policy: .../filters/filter_policy.yaml
 
 Read it top-down: confirm the **included** count is what you expect, then scan the `EXCLUDE`
 lines to confirm each dropped rule is dropped by the filter (and for the reason) you intended.
+
+The `as_of` line is the reference date any relative bound was measured from. To see what a
+policy will do on a future date — or to reproduce what an earlier build shipped — pass it
+explicitly:
+
+```bash
+python scripts/apply_filters.py --preview --as-of 2027-01-01
+```
 
 The preview runs the same override validation the build does, so an unresolved **stale
 override** will block the preview too — resolve that first (see ARCHITECTURE.md §3.3) before you

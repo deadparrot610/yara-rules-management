@@ -11,6 +11,7 @@ import argparse
 import fnmatch
 import re
 import sys
+from datetime import date
 from pathlib import Path
 
 from loguru import logger
@@ -24,6 +25,29 @@ from logging_setup import setup_logging
 # ---------------------------------------------------------------------------
 # Scope helpers
 # ---------------------------------------------------------------------------
+
+def resolve_as_of(policy, override: date | None = None) -> date:
+    """The reference date relative bounds (meta_date.older_than) resolve against.
+
+    Precedence: an explicit override (--as-of) > `as_of:` pinned in the policy
+    file > today. The single place this chain is spelled out — build and preview
+    both come through here, so a build and its preview agree.
+    """
+    return override or policy.as_of or date.today()
+
+
+def parse_as_of_arg(value: str | None) -> date | None:
+    """Parse an --as-of CLI value. Shared by the build and the preview so both
+    accept exactly what the policy file's `as_of` accepts."""
+    if value is None:
+        return None
+    try:
+        return config_schema.parse_iso_date(value)
+    except ValueError as exc:
+        raise config_schema.ConfigError(
+            f"--as-of must be a YYYY-MM-DD date, got {value!r}"
+        ) from exc
+
 
 def _scope_specificity(scope: str) -> int:
     if scope.startswith("rule:"):
@@ -45,7 +69,8 @@ def _scope_applies(scope: str, rule) -> bool:
 # Selector matching
 # ---------------------------------------------------------------------------
 
-def _selector_matches(filter_entry, rule, rule_tags=None, meta_dates=None) -> bool:
+def _selector_matches(filter_entry, rule, rule_tags=None, meta_dates=None,
+                      as_of=None) -> bool:
     match = filter_entry.match
     if match is None:
         return True
@@ -76,14 +101,14 @@ def _selector_matches(filter_entry, rule, rule_tags=None, meta_dates=None) -> bo
                 return False
 
     if match.meta_date is not None and not _meta_date_matches(
-        match.meta_date, rule, meta_dates
+        match.meta_date, rule, meta_dates, as_of
     ):
         return False
 
     return True
 
 
-def _meta_date_matches(spec, rule, meta_dates=None) -> bool:
+def _meta_date_matches(spec, rule, meta_dates=None, as_of=None) -> bool:
     """Evaluate a FilterDateRange against a rule.
 
     The rule's raw meta value is normalized per config.meta_dates before the
@@ -92,11 +117,19 @@ def _meta_date_matches(spec, rule, meta_dates=None) -> bool:
     comparison time, and never touches rule.raw_text — that string is emitted
     verbatim into dist/, and vendor files are committed as received.
 
-    A rule missing the field is simply not selected (returns False). A field
-    that is present but unreadable is a hard error — a typo'd rule date must not
-    silently escape the filter. lint.lint_dates catches these earlier and lists
-    them all at once; this stays as the backstop for a build run without lint.
+    A relative bound (`older_than: 5y`) resolves against `as_of` into the same
+    strict upper bound `before` expresses; the two AND, earlier wins.
+
+    A rule missing the field is simply not selected (returns False) — an
+    undated rule is never aged out. A field that is present but unreadable is a
+    hard error — a typo'd rule date must not silently escape the filter.
+    lint.lint_dates catches these earlier and lists them all at once; this stays
+    as the backstop for a build run without lint.
     """
+    try:
+        before = spec.effective_before(as_of)
+    except ValueError as exc:
+        raise PipelineError(str(exc)) from exc
     raw = rule.meta.get(spec.field)
     if raw is None:
         return False
@@ -111,7 +144,7 @@ def _meta_date_matches(spec, rule, meta_dates=None) -> bool:
         ) from exc
     if spec.after is not None and not value > spec.after:
         return False
-    if spec.before is not None and not value < spec.before:
+    if before is not None and not value < before:
         return False
     if spec.on_or_after is not None and not value >= spec.on_or_after:
         return False
@@ -125,13 +158,13 @@ def _meta_date_matches(spec, rule, meta_dates=None) -> bool:
 # ---------------------------------------------------------------------------
 
 def _resolve_rule(
-    rule, filters: list, default_mode: str, meta_dates=None,
+    rule, filters: list, default_mode: str, meta_dates=None, as_of=None,
 ) -> tuple[str, object]:
     """Return (action, responsible_filter | None)."""
     applicable = [
         f for f in filters
         if _scope_applies(f.scope, rule)
-        and _selector_matches(f, rule, None, meta_dates)
+        and _selector_matches(f, rule, None, meta_dates, as_of)
     ]
 
     if not applicable:
@@ -302,12 +335,17 @@ def run(
     manifest_entries: list,
     config,
     pre_excluded: list[dict] | None = None,
+    as_of: date | None = None,
 ) -> tuple[list, list[dict]]:
     """Apply the filter policy to the post-strip corpus.
 
     policy is a config_schema.FilterPolicy; config is a config_schema.BuildConfig.
     Returns (included_rules, exclusion_record).
     exclusion_record: list of {identifier, filter_id, reason}.
+
+    as_of is the reference date for relative bounds (meta_date.older_than),
+    resolved once here via resolve_as_of so every rule in one run answers the
+    same window — a build that straddles midnight must not filter two ways.
 
     pre_excluded carries rules already removed from `rules` before this call —
     today, only the unparsable-date drops (corpus.drop_unparsable_dates). They
@@ -320,13 +358,14 @@ def run(
     """
     default_mode = policy.default_mode
     filters = policy.filters
+    as_of = resolve_as_of(policy, as_of)
 
     included = []
     exclusion_record = list(pre_excluded or [])
 
     for rule in rules:
         action, responsible = _resolve_rule(
-            rule, filters, default_mode, config.meta_dates)
+            rule, filters, default_mode, config.meta_dates, as_of)
         if action == "include":
             included.append(rule)
         else:
@@ -359,7 +398,12 @@ def main() -> None:
         "--preview", action="store_true",
         help="Preview what the current filter policy would include/exclude (default behavior).",
     )
-    parser.parse_args()
+    parser.add_argument(
+        "--as-of", metavar="YYYY-MM-DD",
+        help="Reference date for relative bounds (meta_date.older_than). "
+             "Defaults to the policy's as_of, else today.",
+    )
+    args = parser.parse_args()
     setup_logging()
 
     root = Path(__file__).resolve().parent.parent
@@ -370,6 +414,7 @@ def main() -> None:
     from config_schema import ConfigError
 
     try:
+        as_of_override = parse_as_of_arg(args.as_of)
         config = config_schema.load_build_config(root)
         manifest_entries = config_schema.load_override_manifest(root)
         policy = config_schema.load_filter_policy(root)
@@ -384,7 +429,9 @@ def main() -> None:
         vendor_remainder, _ = corpus.strip_superseded(corpus_data.vendor_rules, manifest_entries)
         post_strip = vendor_remainder + corpus_data.override_rules + corpus_data.custom_rules
 
-        included, exclusion_record = run(post_strip, policy, root, manifest_entries, config)
+        effective_as_of = resolve_as_of(policy, as_of_override)
+        included, exclusion_record = run(post_strip, policy, root, manifest_entries,
+                                         config, as_of=effective_as_of)
     except (ConfigError, PipelineError) as exc:
         logger.error("Filter preview failed: {}", exc)
         sys.exit(1)
@@ -393,6 +440,7 @@ def main() -> None:
         f"PREVIEW — filter policy: {root / 'filters' / 'filter_policy.yaml'}",
         f"  default_mode : {policy.default_mode}",
         f"  active filters: {len(policy.filters)}",
+        f"  as_of : {effective_as_of.isoformat()}",
         f"  corpus (post-strip): {len(post_strip)} rules",
         f"  included : {len(included)}",
         f"  excluded : {len(exclusion_record)}",

@@ -188,9 +188,31 @@ filters:
     reason: "Superseded by refreshed vendor feed"
 ```
 
-**Selector dimensions** (all present conditions must match): `name` (exact), `name_glob`, `name_regex`, `tags` (rule has all listed tags), `meta` (exact key/value), `meta_in` (meta value is in a list), and `meta_date` (a date-valued meta field within a range). The selector is omitted for a `rule:<Identifier>` scope, which already names its target.
+**Selector dimensions** (all present conditions must match): `name` (exact), `name_glob`, `name_regex`, `tags` (rule has all listed tags), `meta` (exact key/value), `meta_in` (meta value is in a list), and `meta_date` (a date-valued meta field within a range, absolute or relative). The selector is omitted for a `rule:<Identifier>` scope, which already names its target.
 
 **`meta_date` range selector.** Compares a date-valued meta field (`field`, values in `YYYY-MM-DD`) against up to four bounds, all AND-ed: `before` (`<`) and `after` (`>`) are strict; `on_or_before` (`<=`) and `on_or_after` (`>=`) are inclusive. "Between two dates" = supply a lower and an upper bound together. A targeted rule that lacks the field is simply not selected. Rule values are read through `meta_dates` (§6), so a vendor rule dated `04/18/2026` still answers a bound correctly; a rule whose field is present but unreadable never reaches the filter engine — the unparsable-date gate has already failed the build or dropped the rule. A malformed bound in the policy itself is always strict ISO and a `ConfigError` at load.
+
+**Relative bounds (`older_than`).** A fifth key inside `meta_date` expresses the upper bound as
+an age rather than a date: `older_than: 5y` is `before: <as_of − 5y>`, with the same strict `<`.
+The duration is an integer plus `d`, `m` or `y`; months and years are calendar arithmetic with
+the day clamped to the target month's end (one year before 2024-02-29 is 2023-02-28). Given
+alongside `before`, the two AND and the earlier bound wins. This exists because an absolute bound
+encodes a policy intent ("retire anything not touched in five years") as a fact that expires the
+day it is written, obliging someone to remember to edit it.
+
+The reference date is resolved by `apply_filters.resolve_as_of` — `--as-of` > the policy file's
+`as_of:` > today — once per run, so every rule in one build answers the same window. It is stored
+unresolved on `FilterDateRange` (as the parsed amount/unit) because the policy loader has no
+reference date; `FilterDateRange.effective_before(as_of)` does the resolution, and raises rather
+than defaulting to today if a relative bound reaches it without one. Defaulting there would let a
+non-reproducible build pass silently, which is the whole risk this feature introduces.
+
+That risk is bounded rather than eliminated: NFR-6 becomes "identical inputs *and identical
+`as_of`* produce identical output". The build records the resolved `as_of` in
+`build_manifest.json` — the one build input not otherwise recoverable from the repo — so any
+artifact can be reproduced by replaying it with `--as-of`. A policy pinning `as_of:` gives up
+the moving window in exchange for reproducibility from repo contents alone; a policy with no
+relative bound never reads the value at all.
 
 ### 4.2 Resolution algorithm
 For each YARA rule `R` in the post-merge corpus:

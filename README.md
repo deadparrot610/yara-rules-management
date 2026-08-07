@@ -100,10 +100,16 @@ filters:
     ticket: SEC-2002
 ```
 
+Filters can also select on a rule's date meta field, either against a fixed date or as an age —
+`meta_date: {field: last_modified, older_than: 5y}` retires anything not touched in five years
+without an annual edit. The reference date defaults to today and is recorded in the build
+manifest; see [docs/FILTER_GUIDE.md](docs/FILTER_GUIDE.md).
+
 Preview what a policy change would include or exclude before committing:
 
 ```bash
 python scripts/apply_filters.py --preview
+python scripts/apply_filters.py --preview --as-of 2027-01-01   # relative bounds, future date
 ```
 
 ## CI/CD pipeline

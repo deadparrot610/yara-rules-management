@@ -1,6 +1,6 @@
 """Tests for the filter policy engine."""
 
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 
@@ -9,6 +9,7 @@ import yaml
 import apply_filters
 from config_schema import (
     BuildConfig,
+    ConfigError,
     FilterDateRange,
     FilterEntry,
     FilterMatch,
@@ -288,6 +289,137 @@ def test_meta_date_error_names_the_accepted_formats():
         apply_filters._resolve_rule(
             rule, [_date_filter(before=date(2026, 5, 1))], "include_all",
             _meta_dates("%m/%d/%Y"))
+
+
+# --- selector matching: relative age (older_than) --------------------------
+
+AS_OF = date(2026, 8, 7)
+
+
+def test_older_than_excludes_a_rule_past_the_cutoff():
+    rule = _dated("Foo", "2021-08-06")  # one day past as_of - 5y
+    action, _ = apply_filters._resolve_rule(
+        rule, [_date_filter(older_than=(5, "y"))], "include_all", None, AS_OF)
+    assert action == "exclude"
+
+
+def test_older_than_is_strict_at_the_cutoff():
+    # as_of - 5y exactly: not *older* than five years, so it falls through.
+    rule = _dated("Foo", "2021-08-07")
+    action, _ = apply_filters._resolve_rule(
+        rule, [_date_filter(older_than=(5, "y"))], "include_all", None, AS_OF)
+    assert action == "include"
+
+
+@pytest.mark.parametrize("duration,cutoff", [
+    ((30, "d"), date(2026, 7, 8)),
+    ((1, "m"), date(2026, 7, 7)),
+    ((18, "m"), date(2025, 2, 7)),
+    ((5, "y"), date(2021, 8, 7)),
+])
+def test_older_than_units_resolve_to_the_expected_cutoff(duration, cutoff):
+    # A rule one day below the cutoff is excluded; one on it is not.
+    filt = _date_filter(older_than=duration)
+    below = _dated("Below", (cutoff - timedelta(days=1)).isoformat())
+    on = _dated("On", cutoff.isoformat())
+    assert apply_filters._resolve_rule(
+        below, [filt], "include_all", None, AS_OF)[0] == "exclude"
+    assert apply_filters._resolve_rule(
+        on, [filt], "include_all", None, AS_OF)[0] == "include"
+
+
+def test_older_than_tracks_the_reference_date():
+    # The same filter, two reference dates: the window moves, nothing else does.
+    rule = _dated("Foo", "2021-06-01")
+    filt = _date_filter(older_than=(5, "y"))
+    assert apply_filters._resolve_rule(
+        rule, [filt], "include_all", None, date(2026, 8, 7))[0] == "exclude"
+    assert apply_filters._resolve_rule(
+        rule, [filt], "include_all", None, date(2024, 1, 1))[0] == "include"
+
+
+def test_older_than_and_before_intersect_on_the_earlier_bound():
+    # Both are upper bounds and they AND, so only a rule below *both* matches.
+    rule = _dated("Foo", "2021-06-01")            # cutoff(5y) = 2021-08-07
+    filt = _date_filter(older_than=(5, "y"), before=date(2021, 1, 1))
+    assert apply_filters._resolve_rule(
+        rule, [filt], "include_all", None, AS_OF)[0] == "include"
+    older = _dated("Bar", "2020-12-31")
+    assert apply_filters._resolve_rule(
+        older, [filt], "include_all", None, AS_OF)[0] == "exclude"
+
+
+def test_older_than_ignores_a_rule_without_the_field():
+    rule = make_rule("Foo", origin="vendor", meta={"author": "x"})
+    action, responsible = apply_filters._resolve_rule(
+        rule, [_date_filter(older_than=(5, "y"))], "include_all", None, AS_OF)
+    assert action == "include"
+    assert responsible is None
+
+
+def test_older_than_without_a_reference_date_raises():
+    rule = _dated("Foo", "2000-01-01")
+    with pytest.raises(PipelineError, match="needs a reference date"):
+        apply_filters._resolve_rule(
+            rule, [_date_filter(older_than=(5, "y"))], "include_all")
+
+
+def test_older_than_normalizes_a_non_iso_rule_value():
+    rule = _dated("Foo", "06/01/2021")
+    action, _ = apply_filters._resolve_rule(
+        rule, [_date_filter(older_than=(5, "y"))], "include_all",
+        _meta_dates("%m/%d/%Y"), AS_OF)
+    assert action == "exclude"
+
+
+# --- as_of resolution ------------------------------------------------------
+
+def test_resolve_as_of_precedence():
+    pinned = FilterPolicy(as_of=date(2026, 1, 1))
+    unpinned = FilterPolicy()
+    assert apply_filters.resolve_as_of(pinned, date(2020, 3, 4)) == date(2020, 3, 4)
+    assert apply_filters.resolve_as_of(pinned) == date(2026, 1, 1)
+    assert apply_filters.resolve_as_of(unpinned) == date.today()
+
+
+def test_parse_as_of_arg_rejects_a_non_iso_value():
+    assert apply_filters.parse_as_of_arg(None) is None
+    assert apply_filters.parse_as_of_arg("2026-08-07") == AS_OF
+    with pytest.raises(ConfigError, match="--as-of"):
+        apply_filters.parse_as_of_arg("08/07/2026")
+
+
+def test_run_applies_a_relative_bound_end_to_end(tmp_path):
+    rules = [_dated("Stale", "2019-02-02"), _dated("Fresh", "2026-07-13")]
+    policy = FilterPolicy(
+        default_mode="include_all",
+        min_output_rules=0,
+        filters=[_filter("exclude", scope="vendor", fid="F-retire-stale",
+                         match=FilterMatch(meta_date=FilterDateRange(
+                             field="date", older_than=(5, "y"))))],
+    )
+    included, record = apply_filters.run(
+        rules, policy, tmp_path, [], _config(meta_dates=_meta_dates()),
+        as_of=AS_OF)
+    assert [r.identifier for r in included] == ["Fresh"]
+    assert record == [{"identifier": "Stale", "filter_id": "F-retire-stale",
+                       "reason": ""}]
+
+
+def test_run_falls_back_to_the_policy_pinned_as_of(tmp_path):
+    rules = [_dated("Foo", "2019-02-02")]
+    policy = FilterPolicy(
+        default_mode="include_all",
+        min_output_rules=0,
+        as_of=date(2020, 1, 1),   # cutoff 2015-01-01 — Foo is newer, so it stays
+        filters=[_filter("exclude", scope="vendor",
+                         match=FilterMatch(meta_date=FilterDateRange(
+                             field="date", older_than=(5, "y"))))],
+    )
+    included, record = apply_filters.run(
+        rules, policy, tmp_path, [], _config(meta_dates=_meta_dates()))
+    assert [r.identifier for r in included] == ["Foo"]
+    assert record == []
 
 
 def test_run_threads_meta_dates_from_config(tmp_path):
